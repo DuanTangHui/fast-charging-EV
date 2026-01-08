@@ -2,16 +2,7 @@
 from __future__ import annotations
 
 import argparse
-import sys
-import os
 from pathlib import Path
-
-# 获取当前脚本的绝对路径
-current_dir = Path(__file__).resolve().parent
-# 获取项目根目录 (即 scripts 的上一级)
-root_dir = current_dir.parent
-# 将根目录添加到 Python 搜索路径中
-sys.path.append(str(root_dir))
 
 import torch
 

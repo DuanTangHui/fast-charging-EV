@@ -1,0 +1,15 @@
+{"soc_end": NaN, "t_end": 7200.0, "v_max": 6.193731959160927e+36, "t_max": -14522.748046875, "reward_sum": NaN, "epoch": 0, "cycle": 1, "phase": "adaptive", "reward": NaN}
+{"soc_end": NaN, "t_end": 7200.0, "v_max": 6.270262561197906e+36, "t_max": -19232.5625, "reward_sum": NaN, "epoch": 1, "cycle": 1, "phase": "adaptive", "reward": NaN}
+{"soc_end": NaN, "t_end": 7200.0, "v_max": 7.302478753698747e+35, "t_max": -25122.98828125, "reward_sum": NaN, "epoch": 2, "cycle": 1, "phase": "adaptive", "reward": NaN}
+{"soc_end": NaN, "t_end": 7200.0, "v_max": 7.293972818171216e+35, "t_max": -23019.27734375, "reward_sum": NaN, "epoch": 3, "cycle": 1, "phase": "adaptive", "reward": NaN}
+{"soc_end": NaN, "t_end": 7200.0, "v_max": 7.411419061719111e+35, "t_max": -32296.376953125, "reward_sum": NaN, "epoch": 4, "cycle": 1, "phase": "adaptive", "reward": NaN}
+{"soc_end": NaN, "t_end": 7200.0, "v_max": 1.8591246841407504e+35, "t_max": 1.5767933443875128e+36, "reward_sum": NaN, "epoch": 0, "cycle": 2, "phase": "adaptive", "reward": NaN}
+{"soc_end": NaN, "t_end": 7200.0, "v_max": 1.7450888168482817e+35, "t_max": 1.5680597071209154e+36, "reward_sum": NaN, "epoch": 1, "cycle": 2, "phase": "adaptive", "reward": NaN}
+{"soc_end": NaN, "t_end": 7200.0, "v_max": 1.9674077945530583e+35, "t_max": 1.579604518049844e+36, "reward_sum": NaN, "epoch": 2, "cycle": 2, "phase": "adaptive", "reward": NaN}
+{"soc_end": NaN, "t_end": 7200.0, "v_max": 1.7828103353733544e+35, "t_max": 1.5708976599021764e+36, "reward_sum": NaN, "epoch": 3, "cycle": 2, "phase": "adaptive", "reward": NaN}
+{"soc_end": NaN, "t_end": 7200.0, "v_max": 1.941642399962607e+35, "t_max": 1.587025820032555e+36, "reward_sum": NaN, "epoch": 4, "cycle": 2, "phase": "adaptive", "reward": NaN}
+{"soc_end": NaN, "t_end": 7200.0, "v_max": -12016.6728515625, "t_max": 2.3298312640871457e+37, "reward_sum": NaN, "epoch": 0, "cycle": 3, "phase": "adaptive", "reward": NaN}
+{"soc_end": NaN, "t_end": 7200.0, "v_max": -13348.21484375, "t_max": 2.316847986639608e+37, "reward_sum": NaN, "epoch": 1, "cycle": 3, "phase": "adaptive", "reward": NaN}
+{"soc_end": NaN, "t_end": 7200.0, "v_max": -13931.130859375, "t_max": 2.314646077547012e+37, "reward_sum": NaN, "epoch": 2, "cycle": 3, "phase": "adaptive", "reward": NaN}
+{"soc_end": NaN, "t_end": 7200.0, "v_max": -9818.9794921875, "t_max": 2.366578680276922e+37, "reward_sum": NaN, "epoch": 3, "cycle": 3, "phase": "adaptive", "reward": NaN}
+{"soc_end": NaN, "t_end": 7200.0, "v_max": -17087.36328125, "t_max": 2.311531967082491e+37, "reward_sum": NaN, "epoch": 4, "cycle": 3, "phase": "adaptive", "reward": NaN}

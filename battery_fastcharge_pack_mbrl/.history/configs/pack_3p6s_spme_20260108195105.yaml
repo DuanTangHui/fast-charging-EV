@@ -18,7 +18,7 @@ reward:
   w_time: 0.01
   w_v: 2.0
   w_t: 1.0
-  # enable_pack_extensions: false
+  enable_pack_extensions: false
 
 rl:
   gamma: 0.99

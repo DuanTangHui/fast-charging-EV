@@ -1,5 +1,5 @@
-seed: 7
-run_name: pack_3p6s_spme
+seed: 11
+run_name: pack_3p6s_spme_with_soh_prior
 backend: toy
 
 env:
@@ -18,7 +18,7 @@ reward:
   w_time: 0.01
   w_v: 2.0
   w_t: 1.0
-  # enable_pack_extensions: false
+  enable_pack_extensions: false
 
 rl:
   gamma: 0.99
@@ -43,16 +43,16 @@ trainer:
     surrogate_epochs: 25
     policy_epochs: 8
   adaptive:
-    cycles: 2
+    cycles: 3
     real_episodes_per_cycle: 2
     surrogate_epochs: 10
     policy_epochs: 5
 
 soh_prior:
-  enabled: false
-  lambda_prior: 1.0
+  enabled: true
+  lambda_prior: 2.0
   theta_dim: 3
-  dummy_soh: 0.95
+  dummy_soh: 0.93
 
 logging:
   runs_dir: runs

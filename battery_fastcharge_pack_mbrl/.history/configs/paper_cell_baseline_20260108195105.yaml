@@ -1,5 +1,5 @@
-seed: 7
-run_name: pack_3p6s_spme
+seed: 42
+run_name: paper_cell_baseline
 backend: toy
 
 env:
@@ -7,8 +7,8 @@ env:
   max_steps: 240
   v_max: 4.2
   t_max: 320.0
-  pack_cells_p: 3
-  pack_cells_s: 6
+  pack_cells_p: 1
+  pack_cells_s: 1
   terminate_on_violation: true
   observation:
     include_std: true
@@ -18,7 +18,7 @@ reward:
   w_time: 0.01
   w_v: 2.0
   w_t: 1.0
-  # enable_pack_extensions: false
+  enable_pack_extensions: false
 
 rl:
   gamma: 0.99
@@ -29,7 +29,7 @@ rl:
   buffer_size: 50000
   exploration_sigma: 0.3
   action_low: 0.0
-  action_high: 120.0
+  action_high: 60.0
   train_steps_per_epoch: 200
 
 surrogate:
@@ -41,12 +41,12 @@ trainer:
   cycle0:
     real_episodes: 6
     surrogate_epochs: 25
-    policy_epochs: 8
+    policy_epochs: 6
   adaptive:
     cycles: 2
     real_episodes_per_cycle: 2
     surrogate_epochs: 10
-    policy_epochs: 5
+    policy_epochs: 4
 
 soh_prior:
   enabled: false
