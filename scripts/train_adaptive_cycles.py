@@ -40,7 +40,21 @@ def main() -> None:
 
     static_ckpt = Path(config["logging"]["runs_dir"]) / "cycle0" / "static_surrogate.pt"
     if static_ckpt.exists():
-        static_surrogate = torch.load(static_ckpt)
+        # Attempt a safe weights-only load. Some torch versions require
+        # allowlisting custom classes for weights-only mode.
+        try:
+            add_safe = getattr(torch.serialization, "add_safe_globals", None)
+            if add_safe is not None:
+                add_safe([StaticSurrogate])
+        except Exception:
+            pass
+        try:
+            static_surrogate = torch.load(static_ckpt, weights_only=True)
+        except Exception:
+            # Fall back to the classic load if weights-only fails (trusted file).
+            # This may execute arbitrary code during unpickling - only do this
+            # if you trust the checkpoint source.
+            static_surrogate = torch.load(static_ckpt)
     else:
         static_surrogate = StaticSurrogate(
             input_dim=env.observation_space.shape[0] + 1,

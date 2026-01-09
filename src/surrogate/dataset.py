@@ -46,4 +46,13 @@ def build_dataset(transitions: List[Tuple[np.ndarray, np.ndarray, np.ndarray]]) 
     a_std = actions.std(axis=0)
     d_mean = deltas.mean(axis=0)
     d_std = deltas.std(axis=0)
+    # Make normalization robust: replace nan/inf and enforce a minimum std to avoid
+    # extremely large normalized values (which can lead to overflow in training).
+    s_std = np.nan_to_num(s_std, nan=1.0, posinf=1.0, neginf=1.0)
+    a_std = np.nan_to_num(a_std, nan=1.0, posinf=1.0, neginf=1.0)
+    d_std = np.nan_to_num(d_std, nan=1.0, posinf=1.0, neginf=1.0)
+    min_std = 1e-6
+    s_std[s_std < min_std] = min_std
+    a_std[a_std < min_std] = min_std
+    d_std[d_std < min_std] = min_std
     return TransitionDataset(states, actions, deltas, s_mean, s_std, a_mean, a_std, d_mean, d_std)

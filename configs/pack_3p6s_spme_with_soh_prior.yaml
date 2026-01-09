@@ -1,6 +1,6 @@
 seed: 11
 run_name: pack_3p6s_spme_with_soh_prior
-backend: toy
+backend: liionpack
 
 env:
   dt: 30.0 # RL每30s决策一次
