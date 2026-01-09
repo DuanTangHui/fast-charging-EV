@@ -8,9 +8,9 @@ from dataclasses import dataclass
 class AgingParams:
     """Simple aging parameters for toy environment."""
 
-    capacity_scale: float #容量保持率
-    resistance_scale: float #内阻增长率
-    thermal_scale: float #热特性变化率
+    capacity_scale: float
+    resistance_scale: float
+    thermal_scale: float
 
 
 def compute_aging_params(cycle_index: int, theta_hat: list[float] | None = None) -> AgingParams:
