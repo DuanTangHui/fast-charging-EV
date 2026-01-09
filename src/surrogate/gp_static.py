@@ -31,14 +31,16 @@ class StaticSurrogate:
 
         if self.dataset is None:
             raise RuntimeError("Static surrogate has not been fit.")
+        # 1. 模型输出的是归一化的值（比如 0 到 1 之间）
         mean, std = self.model.predict(self.dataset, state, action)
+        # 2. 反归一化：将神经网络的输出转换回物理单位（如 V, K, SOC）
         delta = self.dataset.denormalize_delta(mean)
+        # 3. 标准差也需要反归一化，注意这里的 scale 操作
         delta_std = std * (self.dataset.d_std + 1e-6)
         return delta, delta_std
 
     def rollout(self, state: np.ndarray, policy: Callable[[np.ndarray], np.ndarray], horizon: int) -> np.ndarray:
         """Rollout the surrogate model for a horizon."""
-
         traj = [state]
         current = state
         for _ in range(horizon):
