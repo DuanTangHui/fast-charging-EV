@@ -1,7 +1,7 @@
 """Run adaptive cycles with differential surrogate updates."""
 from __future__ import annotations
 
-import argparse
+import argparse # 解析命令行参数 
 import sys
 import os
 from pathlib import Path

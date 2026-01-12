@@ -3,16 +3,23 @@ run_name: pack_3p6s_spme_with_soh_prior
 backend: liionpack
 
 env:
+  backend: liionpack
+  parameter_set: Chen2020
+  nproc: 2
+  Rb: 1.5e-6
+  Rc: 1e-2
+  Ri_init: 5e-2
+  ocv_init: 4.0
   dt: 30.0 # RL每30s决策一次
   max_steps: 240 #RL每个episode最多240步
   v_max: 4.2 #单体电池最高电压
-  t_max: 320.0 #单体电池最高温度
+  t_max: 333.15 #单体电池最高温度 （单位K即60℃）
   pack_cells_p: 3 #电池包串联3个单体电池
   pack_cells_s: 6 #电池包并联6个单体电池
   terminate_on_violation: true #是否在违反约束时终止episode
   observation: 
     include_std: true #包含电池单体电压和温度的标准差->考虑电池单体间的差异
-    
+  htc: 10.0  
 reward:
   w_soc: 10.0
   w_time: 0.01
@@ -28,8 +35,8 @@ rl:
   batch_size: 64
   buffer_size: 50000
   exploration_sigma: 0.3
-  action_low: 0.0
-  action_high: 120.0
+  action_low: -20.0
+  action_high: 0.0
   train_steps_per_epoch: 200
 
 surrogate:

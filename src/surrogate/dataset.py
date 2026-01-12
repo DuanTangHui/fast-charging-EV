@@ -23,9 +23,22 @@ class TransitionDataset:
 
     def normalize_sa(self, states: np.ndarray, actions: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """Normalize state and action arrays."""
+        states = np.asarray(states, dtype=np.float32)
+        actions = actions.astype(np.float32)
+        # 用高精度算统计量
+        s_mean = states.mean(axis=0, dtype=np.float64)
+        s_var  = states.var(axis=0, dtype=np.float64)
+        s_std  = np.sqrt(s_var)
 
-        s_norm = (states - self.s_mean) / (self.s_std + 1e-6)
-        a_norm = (actions - self.a_mean) / (self.a_std + 1e-6)
+        # 给 std 一个“物理合理下限”
+        STD_FLOOR = 1e-3    # 对你这个量级非常合适
+        s_std = np.maximum(s_std, STD_FLOOR)
+
+        self.s_mean = s_mean.astype(np.float32)
+        self.s_std  = s_std.astype(np.float32)
+
+        s_norm = (states - self.s_mean) / self.s_std 
+        a_norm = (actions - self.a_mean) / self.a_std
         return s_norm, a_norm
 
     def denormalize_delta(self, delta_norm: np.ndarray) -> np.ndarray:
