@@ -56,8 +56,8 @@ class BasePackEnv(gym.Env):
         self.v_max = v_max
         self.t_max = t_max
         self.action_space = gym.spaces.Box(
-            low=np.array([0.0], dtype=np.float32),
-            high=np.array([120.0], dtype=np.float32),
+            low=np.array([-20.0], dtype=np.float32),  # 最大充电电流（负号）
+            high=np.array([0.0], dtype=np.float32),    # 0 表示不充
         )
         self.observation_space = gym.spaces.Box(
             low=-np.inf, high=np.inf, shape=(12,), dtype=np.float32

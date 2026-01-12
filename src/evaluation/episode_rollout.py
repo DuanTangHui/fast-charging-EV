@@ -18,7 +18,7 @@ def rollout_env(
     """Rollout in a real environment."""
 
     state, info = env.reset()
-    infos: List[Dict] = []
+    infos: List[Dict] = [info]
     total_reward = 0.0
     prev_info = info
     done = False
@@ -32,6 +32,23 @@ def rollout_env(
         state = next_state
         prev_info = next_info
         done = terminated or truncated
+        if len(infos) < 5:
+            print("policy_action:", action)
+
+        # rollout_env 末尾 return 前
+    print(
+        "episode_end:",
+        "steps=", len(infos)-1,
+        "R=", round(total_reward, 2),
+        "SOC_end=", round(infos[-1]["SOC_pack"], 4),
+        "Vmax=", round(max(i["V_cell_max"] for i in infos), 4),
+        "Tmax=", round(max(i["T_cell_max"] for i in infos), 2),
+        "viol=", infos[-1].get("violation", None),
+        "reason=", infos[-1].get("terminated_reason", None),
+        "I_mean=", round(np.mean([i["I"] for i in infos[1:]]), 2) if len(infos) > 1 else None,
+        "I_min=", round(np.min([i["I"] for i in infos[1:]]), 2) if len(infos) > 1 else None,
+    )
+
     return total_reward, infos
 
 

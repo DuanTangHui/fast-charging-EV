@@ -52,6 +52,9 @@ class EnsembleDeltaModel:
         s_norm, a_norm = dataset.normalize_sa(dataset.states, dataset.actions)
         x = np.concatenate([s_norm, a_norm], axis=-1)
         y = (dataset.deltas - dataset.d_mean) / (dataset.d_std + 1e-6)
+        # Guard against NaN/Inf in inputs/targets which can destabilize training.
+        x = np.nan_to_num(x, nan=0.0, posinf=1e6, neginf=-1e6)
+        y = np.nan_to_num(y, nan=0.0, posinf=1e6, neginf=-1e6)
         x_tensor = torch.tensor(x, dtype=torch.float32)
         y_tensor = torch.tensor(y, dtype=torch.float32)
         for _ in range(epochs):
@@ -75,4 +78,8 @@ class EnsembleDeltaModel:
         preds_np = np.stack(preds)
         mean = preds_np.mean(axis=0)
         std = preds_np.std(axis=0)
+        # Sanitize outputs to avoid NaN/Inf getting propagated into the simulator.
+        mean = np.nan_to_num(mean, nan=0.0, posinf=1e6, neginf=-1e6)
+        std = np.nan_to_num(std, nan=1e-6, posinf=1e6, neginf=1e-6)
+        std[std < 1e-6] = 1e-6
         return mean, std

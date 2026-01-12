@@ -57,7 +57,23 @@ def train_adaptive_cycles(
         segments = []
         transitions: List[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
         for _ in range(config.real_episodes_per_cycle):
-            total_reward, infos = rollout_env(env, lambda s: env.action_space.sample(), reward_cfg)
+            def safe_random(_s):
+                # base: 随机充电电流（负数）
+                low = float(env.action_space.low[0])
+                high = float(env.action_space.high[0])
+                I = float(np.random.uniform(low, high))
+
+                vmax = getattr(env, "_last_vmax", None)
+                if vmax is not None:
+                    if vmax > 4.19:
+                        I = 0.0
+                    elif vmax > 4.15:
+                        I = max(I, -2.0)
+                    elif vmax > 4.10:
+                        I = max(I, -8.0)
+
+                return np.array([I], dtype=np.float32)
+            total_reward, infos = rollout_env(env, safe_random, reward_cfg)
             segments.append(
                 {
                     "soc": np.array([info["SOC_pack"] for info in infos]),
@@ -102,6 +118,19 @@ def train_adaptive_cycles(
                     dtype=np.float32,
                 )
                 transitions.append((s, np.array([infos[i]["I"]], dtype=np.float32), s_next - s))
+        
+      
+        states = np.stack([t[0] for t in transitions])
+        deltas = np.stack([t[2] for t in transitions])
+
+        def report(name, x):
+            print(name, "shape", x.shape,
+                "min", np.nanmin(x), "max", np.nanmax(x),
+                "nan", np.isnan(x).any(), "inf", np.isinf(x).any())
+
+        report("states", states)
+        report("deltas", deltas)
+
         dataset = build_dataset(transitions)
         diff_surrogate.fit(dataset, epochs=config.surrogate_epochs)
 
