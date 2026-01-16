@@ -49,7 +49,7 @@ def main() -> None:
 
     surrogate = StaticSurrogate(
         input_dim=env.observation_space.shape[0] + 1,
-        output_dim=env.observation_space.shape[0],
+        output_dim=env.observation_space.shape[0] -1,  # 去掉 SOH 维度
         hidden_sizes=config["surrogate"]["hidden_sizes"],
         ensemble_size=config["surrogate"]["ensemble_size"],
         lr=config["surrogate"]["learning_rate"],

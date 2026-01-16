@@ -7,7 +7,7 @@ import numpy as np
 
 from ..envs.base_env import BasePackEnv
 from ..rewards.paper_reward import PaperRewardConfig, reward_from_info
-from .constraints import state_to_info
+from .constraints import StateIndex, state_to_info, is_violation
 
 
 def rollout_env(
@@ -16,8 +16,10 @@ def rollout_env(
     reward_cfg: PaperRewardConfig,
 ) -> Tuple[float, List[Dict]]:
     """Rollout in a real environment."""
-
+    
     state, info = env.reset()
+    print("real env info keys:", sorted(info.keys()))
+
     infos: List[Dict] = [info]
     total_reward = 0.0
     prev_info = info
@@ -36,6 +38,8 @@ def rollout_env(
             print("policy_action:", action)
 
         # rollout_env 末尾 return 前
+    print("policy:", getattr(policy, "__name__", type(policy).__name__))
+
     print(
         "episode_end:",
         "steps=", len(infos)-1,
@@ -47,6 +51,8 @@ def rollout_env(
         "reason=", infos[-1].get("terminated_reason", None),
         "I_mean=", round(np.mean([i["I"] for i in infos[1:]]), 2) if len(infos) > 1 else None,
         "I_min=", round(np.min([i["I"] for i in infos[1:]]), 2) if len(infos) > 1 else None,
+        "I_exec_mean=", round(np.mean([i.get("I_pack_est", i["I"]) for i in infos[1:]]), 2),
+        "I_exec_min=", round(np.min([i.get("I_pack_est", i["I"]) for i in infos[1:]]), 2),
     )
 
     return total_reward, infos
@@ -72,8 +78,16 @@ def rollout_surrogate(
         action = policy(state)
         delta, _ = surrogate(state, action)
         next_state = state + delta
+        # 防止发散的安全裁剪
+        idx = StateIndex()
+        next_state[idx.SOC_pack] = np.clip(next_state[idx.SOC_pack], 0.0, 1.0)
+        next_state[idx.V_cell_max] = np.clip(next_state[idx.V_cell_max], 0.0, v_max)
+        next_state[idx.T_cell_max] = np.clip(next_state[idx.T_cell_max], 0.0, t_max)
+      
+        next_state[idx.I_prev] = float(action[0])
         t += dt
         next_info = state_to_info(next_state, t, float(action[0]))
+        next_info["violation"] = is_violation(next_state, v_max, t_max) 
         reward = reward_from_info(prev_info, next_info, reward_cfg, v_max, t_max)
         next_info["reward"] = reward
         infos.append(next_info)

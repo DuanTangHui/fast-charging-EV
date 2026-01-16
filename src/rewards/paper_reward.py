@@ -28,17 +28,18 @@ def compute_paper_reward(
 ) -> float:
     """Compute paper-style reward using pack-level max values."""
 
+
     r_soc = config.w_soc * (soc_next - soc_prev)
-    r_time = -config.w_time * (t_next - t_prev)
-    r_v = -config.w_v * (v_max_next - v_limit) if v_max_next > v_limit else 0.0
-    r_t = -config.w_t * (t_max_next - t_limit) if t_max_next > t_limit else 0.0
-    return r_soc + r_time + r_v + r_t
+    r_time = -config.w_time
+    r_v = -config.w_v * max(0.0, v_max_next - v_limit)
+    r_t = -config.w_t * max(0.0, t_max_next - t_limit) 
+    return r_soc + r_time + r_v + r_t 
 
 
 def reward_from_info(prev: Dict, next_info: Dict, config: PaperRewardConfig, v_limit: float, t_limit: float) -> float:
     """Convenience function to compute reward from info dicts."""
 
-    return compute_paper_reward(
+    r = compute_paper_reward(
         soc_prev=float(prev["SOC_pack"]),
         soc_next=float(next_info["SOC_pack"]),
         t_prev=float(prev["t"]),
@@ -49,3 +50,7 @@ def reward_from_info(prev: Dict, next_info: Dict, config: PaperRewardConfig, v_l
         t_limit=t_limit,
         config=config,
     )
+
+    if next_info.get("violation", False):
+          r -= 50.0
+    return r

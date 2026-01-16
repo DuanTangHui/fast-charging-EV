@@ -1,17 +1,26 @@
 seed: 7
 run_name: pack_3p6s_spme
-backend: toy
+backend: liionpack
 
 env:
-  dt: 30.0
-  max_steps: 240
-  v_max: 4.2
-  t_max: 320.0
-  pack_cells_p: 3
-  pack_cells_s: 6
-  terminate_on_violation: true
-  observation:
-    include_std: true
+  backend: liionpack
+  parameter_set: Chen2020
+  nproc: 16
+  Rb: 1.5e-6
+  Rc: 1e-2 # Rc=0.01（10 mΩ）：可能偏大或偏保守
+  Ri_init: 5e-3
+  ocv_init: 4.0  # ocv_init=4.0：作为“初值猜测”勉强可以，但会增加求解压力reset 里 initial_soc 在 0.2~0.3，而对应 OCV 通常不在 4.0V 这么高的区间（具体看参数集/OCV曲线）。
+  dt: 10.0 # RL每30s决策一次
+  max_steps: 720 #RL每个episode最多720步
+  v_max: 4.2 #单体电池最高电压
+  t_max: 333.15 #单体电池最高温度 （单位K即60℃）
+  pack_cells_p: 3 #电池包并联3个单体电池
+  pack_cells_s: 6 #电池包串联6个单体电池
+  terminate_on_violation: true #是否在违反约束时终止episode
+  observation: 
+    include_std: true #包含电池单体电压和温度的标准差->考虑电池单体间的差异
+  htc: 10.0
+
 
 reward:
   w_soc: 10.0
@@ -28,8 +37,8 @@ rl:
   batch_size: 64
   buffer_size: 50000
   exploration_sigma: 0.3
-  action_low: 0.0
-  action_high: 120.0
+  action_low: -20.0
+  action_high: 0.0
   train_steps_per_epoch: 200
 
 surrogate:
@@ -39,9 +48,9 @@ surrogate:
 
 trainer:
   cycle0:
-    real_episodes: 6
-    surrogate_epochs: 25
-    policy_epochs: 8
+    real_episodes: 30
+    surrogate_epochs: 50
+    policy_epochs: 10
   adaptive:
     cycles: 2
     real_episodes_per_cycle: 2

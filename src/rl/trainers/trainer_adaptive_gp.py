@@ -57,23 +57,28 @@ def train_adaptive_cycles(
         segments = []
         transitions: List[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
         for _ in range(config.real_episodes_per_cycle):
-            def safe_random(_s):
-                # base: 随机充电电流（负数）
-                low = float(env.action_space.low[0])
-                high = float(env.action_space.high[0])
-                I = float(np.random.uniform(low, high))
+            def guarded_random(state: np.ndarray) -> np.ndarray:
+                # 默认随机
+                a = np.random.uniform(-20.0, 0.0, size=(1,)).astype(np.float32)
 
-                vmax = getattr(env, "_last_vmax", None)
-                if vmax is not None:
-                    if vmax > 4.19:
-                        I = 0.0
-                    elif vmax > 4.15:
-                        I = max(I, -2.0)
-                    elif vmax > 4.10:
-                        I = max(I, -8.0)
+                # 从 env 里拿上一步 info
+                env = guarded_random.env_ref
+                last = getattr(env, "_last_info", None)
+               
+                if last is None:
+                    return a
 
-                return np.array([I], dtype=np.float32)
-            total_reward, infos = rollout_env(env, safe_random, reward_cfg)
+                v = float(last.get("V_cell_max", 0.0))
+
+                # 电压守门（给 dt=30s 留缓冲）
+                if v > 4.195:
+                    return np.array([0.0], dtype=np.float32)
+                if v > 4.18:
+                    return np.array([-2.0], dtype=np.float32)
+
+                return a
+            guarded_random.env_ref = env
+            total_reward, infos = rollout_env(env, guarded_random, reward_cfg)
             segments.append(
                 {
                     "soc": np.array([info["SOC_pack"] for info in infos]),
@@ -158,6 +163,7 @@ def train_adaptive_cycles(
                 v_max=env.v_max,
                 t_max=env.t_max,
             )
+            
             metrics = summarize_episode(infos)
             metrics.update({"epoch": epoch, "cycle": cycle, "phase": "adaptive", "reward": total_reward})
             log_metrics(f"{run_dir}/metrics.jsonl", metrics)

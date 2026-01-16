@@ -18,6 +18,12 @@ class StateIndex:
     T_cell_max: int = 4
     T_cell_min: int = 5
     dT: int = 6
+    std_V: int = 7
+    std_T: int = 8
+    std_SOC: int = 9
+    SOH_pack: int = 10
+    I_prev: int = 11
+
 
 
 def state_to_info(state: np.ndarray, t: float, i: float) -> Dict[str, float]:
@@ -34,6 +40,11 @@ def state_to_info(state: np.ndarray, t: float, i: float) -> Dict[str, float]:
         "T_cell_min": float(state[idx.T_cell_min]),
         "dV": float(state[idx.dV]),
         "dT": float(state[idx.dT]),
+        "std_V": float(state[idx.std_V]),
+        "std_T": float(state[idx.std_T]),
+        "std_SOC": float(state[idx.std_SOC]),
+        "SOH_pack": float(state[idx.SOH_pack]),
+        "I_prev": float(state[idx.I_prev]),
     }
 
 
