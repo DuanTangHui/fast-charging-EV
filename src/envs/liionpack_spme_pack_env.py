@@ -298,7 +298,9 @@ class LiionpackSPMEPackEnv(BasePackEnv):
             info = {
                 "t": 0.0,
                 "I": 0.0,
+                "I_prev": 0.0,
                 "SOC_pack": float(np.mean(soc)),
+                "std_SOC": float(np.std(soc)),
                 "V_cell_max": float(np.max(v_cells)),
                 "V_cell_min": float(np.min(v_cells)),
                 "T_cell_max": float(np.max(t_cells)),
@@ -329,7 +331,9 @@ class LiionpackSPMEPackEnv(BasePackEnv):
         info = {
             "t": 0.0,
             "I": 0.0,
+            "I_prev": 0.0,
             "SOC_pack": float(np.mean(soc)),
+            "std_SOC": float(np.std(soc)),
             "V_cell_max": float(np.max(voltage)),
             "V_cell_min": float(np.min(voltage)),
             "T_cell_max": float(np.max(temperature)),
@@ -427,6 +431,7 @@ class LiionpackSPMEPackEnv(BasePackEnv):
     
                 # 电流相关（重要：区分“动作setpoint” vs “模型真实执行”）
                 "I": current,                                        # [A] 动作电流（你传入/clip后的 setpoint）
+                "I_prev": current,
                 "I_pack_est": I_pack_est_s,   # 推荐用这个作为“实际执行电流”
                 "I_pack_est_p": I_pack_est_p,             # 可选
                 "I_cell_mean": float(np.mean(i_cells)),              # [A] cell 电流均值（理想均匀分流时≈I_pack/18）
@@ -435,6 +440,7 @@ class LiionpackSPMEPackEnv(BasePackEnv):
                 
                 # SOC
                 "SOC_pack": soc_pack,                      # [-] pack 平均 SOC（你用库仑计数得到的 cell SOC 均值）
+                "std_SOC": float(np.std(soc)),
                 
                 # 电压/温度（cell级统计 & pack电压）
                 "V_cell_max": v_max,                                 # [V] 单体端电压最大值（安全约束关键）
@@ -484,7 +490,9 @@ class LiionpackSPMEPackEnv(BasePackEnv):
         info = {
             "t": state.t,
             "I": current,
+            "I_prev": current,
             "SOC_pack": float(np.mean(soc)),
+            "std_SOC": float(np.std(soc)),
             "V_cell_max": v_max,
             "V_cell_min": float(np.min(voltage)),
             "T_cell_max": t_max,

@@ -5,7 +5,7 @@ from typing import Callable, List, Tuple
 
 import numpy as np
 
-from .dataset import TransitionDataset, fast_idxs, SOH_INDEX
+from .dataset import TransitionDataset
 from .nn_delta_model import EnsembleConfig, EnsembleDeltaModel
 
 
@@ -38,23 +38,10 @@ class StaticSurrogate:
         # # 3. 标准差也需要反归一化，注意这里的 scale 操作
         # delta_std = std * (self.dataset.d_std + 1e-6)
         # return delta, delta_std
-        mean_fast, std_fast = self.model.predict(self.dataset, state, action)
+        mean, std = self.model.predict(self.dataset, state, action)
 
-        delta_fast = self.dataset.denormalize_delta_fast(mean_fast)
-        delta_fast_std = std_fast * (self.dataset.d_std_fast + 1e-6)
-
-        obs_dim = state.shape[0]
-        idxs = fast_idxs(obs_dim)
-
-        delta = np.zeros(obs_dim, dtype=float)
-        delta_std = np.zeros(obs_dim, dtype=float)
-
-        delta[idxs] = delta_fast
-        delta_std[idxs] = delta_fast_std
-
-        # SOH delta = 0（不变）
-        delta[SOH_INDEX] = 0.0
-        delta_std[SOH_INDEX] = 1e-6
+        delta = self.dataset.denormalize_delta(mean)
+        delta_std = std * (self.dataset.d_std + 1e-6)
 
         return delta, delta_std
 

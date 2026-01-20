@@ -24,16 +24,11 @@ def build_observation(
     t_min = float(np.min(temperature))
     return PackObservation(
         SOC_pack=soc_pack,
+        std_SOC=float(np.std(soc)),
         V_cell_max=v_max,
-        V_cell_min=v_min,
         dV=v_max - v_min,
         T_cell_max=t_max,
         T_cell_min=t_min,
-        dT=t_max - t_min,
-        std_V=float(np.std(voltage)),
-        std_T=float(np.std(temperature)),
-        std_SOC=float(np.std(soc)),
-        SOH_pack=float(np.mean(soh)),
         I_prev=i_prev,
     )
 

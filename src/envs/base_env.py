@@ -13,16 +13,11 @@ class PackObservation:
     """Pack-level observation container."""
 
     SOC_pack: float
+    std_SOC: float
     V_cell_max: float
-    V_cell_min: float
     dV: float
     T_cell_max: float
     T_cell_min: float
-    dT: float
-    std_V: float
-    std_T: float
-    std_SOC: float
-    SOH_pack: float
     I_prev: float
 
     def as_array(self) -> np.ndarray:
@@ -31,16 +26,11 @@ class PackObservation:
         return np.array(
             [
                 self.SOC_pack,
+                self.std_SOC,
                 self.V_cell_max,
-                self.V_cell_min,
                 self.dV,
                 self.T_cell_max,
                 self.T_cell_min,
-                self.dT,
-                self.std_V,
-                self.std_T,
-                self.std_SOC,
-                self.SOH_pack,
                 self.I_prev,
             ],
             dtype=np.float32,
@@ -60,7 +50,7 @@ class BasePackEnv(gym.Env):
             high=np.array([0.0], dtype=np.float32),    # 0 表示不充
         )
         self.observation_space = gym.spaces.Box(
-            low=-np.inf, high=np.inf, shape=(12,), dtype=np.float32
+            low=-np.inf, high=np.inf, shape=(7,), dtype=np.float32
         )
 
     def reset(self, *, seed: int | None = None, options: Dict | None = None) -> Tuple[np.ndarray, Dict]:
