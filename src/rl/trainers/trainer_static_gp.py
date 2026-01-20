@@ -61,17 +61,12 @@ def obs_from_info(info: dict) -> np.ndarray:
     return np.array(
         [
             info["SOC_pack"],
+            info.get("std_SOC", 0.0),
             info["V_cell_max"],
-            info["V_cell_min"],
             info["dV"],
             info["T_cell_max"],
             info["T_cell_min"],
-            info["dT"],
-            info["std_V"],
-            info["std_T"],
-            info["std_SOC"],
-            info["SOH_pack"],
-            info["I_prev"],
+            info.get("I_prev", info.get("I", 0.0)),
         ],
         dtype=np.float32,
     )

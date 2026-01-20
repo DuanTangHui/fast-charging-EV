@@ -9,7 +9,6 @@ import torch
 from torch import nn
 
 from .dataset import TransitionDataset
-from src.surrogate import dataset
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
@@ -73,13 +72,9 @@ class EnsembleDeltaModel:
         
         x = np.concatenate([s_norm, a_norm], axis=-1)
        
-        # y = (dataset.deltas - dataset.d_mean) / (dataset.d_std + 1e-6)
-        y = (dataset.deltas_fast - dataset.d_mean_fast) / (dataset.d_std_fast + 1e-6)
+        y = (dataset.deltas - dataset.d_mean) / (dataset.d_std + 1e-6)
 
         # # ========== 新增：数据质量诊断 ==========
-        # print("deltas_fast shape:", dataset.deltas_fast.shape)   # (N, 11)
-        # print("d_std_fast min:", dataset.d_std_fast.min())
-
         # print_array_stats("x (normalized s+a)", x)
         # print_array_stats("y (normalized delta)", y)
 

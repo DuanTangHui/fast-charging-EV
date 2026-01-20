@@ -22,9 +22,10 @@ env:
   htc: 10.0  
 reward:
   w_soc: 10.0
-  w_time: 0.01
-  w_v: 2.0
+  w_time: 0.05
+  w_v: 100.0
   w_t: 1.0
+  w_const: 20.0
   # enable_pack_extensions: false
 
 rl:
