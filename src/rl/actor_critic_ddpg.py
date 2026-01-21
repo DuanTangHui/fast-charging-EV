@@ -11,6 +11,36 @@ from torch import nn
 from .replay_buffer import ReplayBuffer
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+class RunningNormalizer:
+    """Track running mean/std for state normalization."""
+
+    def __init__(self, dim: int, min_std: float = 1e-3) -> None:
+        self.dim = dim
+        self.min_std = min_std
+        self.count = 0
+        self.mean = np.zeros(dim, dtype=np.float64)
+        self.m2 = np.zeros(dim, dtype=np.float64)
+
+    def update(self, x: np.ndarray) -> None:
+        x_arr = np.asarray(x, dtype=np.float64).reshape(-1)
+        if x_arr.shape[0] != self.dim:
+            raise ValueError(f"Expected state dim {self.dim}, got {x_arr.shape[0]}")
+        self.count += 1
+        delta = x_arr - self.mean
+        self.mean += delta / self.count
+        delta2 = x_arr - self.mean
+        self.m2 += delta * delta2
+
+    def update_batch(self, batch: np.ndarray) -> None:
+        for item in np.asarray(batch):
+            self.update(item)
+
+    def normalize(self, x: np.ndarray) -> np.ndarray:
+        if self.count < 2:
+            return np.asarray(x, dtype=np.float32)
+        var = self.m2 / (self.count - 1)
+        std = np.sqrt(np.maximum(var, self.min_std ** 2))
+        return ((np.asarray(x, dtype=np.float32) - self.mean.astype(np.float32)) / std.astype(np.float32))
 
 class Actor(nn.Module):
     """Actor network mapping states to actions."""
@@ -81,15 +111,23 @@ class DDPGAgent:
         self.critic_opt = torch.optim.Adam(self.critic.parameters(), lr=config.critic_lr)
         self.config = config
         self.buffer = ReplayBuffer(config.buffer_size)
+        self.state_norm = RunningNormalizer(state_dim)
 
     def act(self, state: np.ndarray) -> np.ndarray:
         """Select action from actor network."""
 
-        state_tensor = torch.tensor(state, dtype=torch.float32,
+        self.state_norm.update(state)
+        state_norm = self.state_norm.normalize(state)
+        state_tensor = torch.tensor(state_norm, dtype=torch.float32,
                             device=DEVICE).unsqueeze(0)
         with torch.no_grad():
             action = self.actor(state_tensor).cpu().numpy()[0]
         return action
+    
+    def observe(self, state: np.ndarray, action: np.ndarray, reward: float, next_state: np.ndarray, done: bool) -> None:
+        """Store transition and update normalization stats."""
+        self.state_norm.update(next_state)
+        self.buffer.push(state, action, reward, next_state, done)
 
     def update(self) -> Tuple[float, float]:
         """Update networks from replay buffer."""
@@ -97,11 +135,13 @@ class DDPGAgent:
         if len(self.buffer) < self.config.batch_size:
             return 0.0, 0.0
         states, actions, rewards, next_states, dones = self.buffer.sample(self.config.batch_size)
-        states_t = torch.tensor(states, dtype=torch.float32, device=DEVICE)
+        states_norm = self.state_norm.normalize(states)
+        next_states_norm = self.state_norm.normalize(next_states)
+        states_t = torch.tensor(states_norm, dtype=torch.float32, device=DEVICE)
         actions_t = torch.tensor(actions, dtype=torch.float32, device=DEVICE)
         rewards_t = torch.tensor(rewards, dtype=torch.float32,
                                 device=DEVICE).unsqueeze(-1)
-        next_states_t = torch.tensor(next_states, dtype=torch.float32,
+        next_states_t = torch.tensor(next_states_norm, dtype=torch.float32,
                                     device=DEVICE)
         dones_t = torch.tensor(dones, dtype=torch.float32,
                             device=DEVICE).unsqueeze(-1)

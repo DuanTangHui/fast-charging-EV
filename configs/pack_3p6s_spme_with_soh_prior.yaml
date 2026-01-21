@@ -47,9 +47,9 @@ surrogate:
 
 trainer:
   cycle0:
-    real_episodes: 30
-    surrogate_epochs: 50
-    policy_epochs: 10
+    real_episodes: 6
+    surrogate_epochs: 25
+    policy_epochs: 6
   adaptive:
     cycles: 3
     real_episodes_per_cycle: 2

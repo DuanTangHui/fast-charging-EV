@@ -73,25 +73,61 @@ def rollout_surrogate(
     infos: List[Dict] = []
     total_reward = 0.0
     t = 0.0
+    idx = StateIndex()
     prev_info = state_to_info(state, t, 0.0)
+    I_MIN, I_MAX = -18, -0.3   # 用你的 stats
     for _ in range(horizon):
         action = policy(state)
+        # === exploration (训练时打开) ===
+        idx = StateIndex()
+        v = float(state[idx.V_cell_max])
+
+        # 电压退火：低压多探索，高压少探索
+        sigma_hi = 2.0
+        sigma_lo = 0.3
+        v0, v1 = 4.05, 4.15  # 4.05开始降噪，4.15以后噪声接近sigma_lo
+
+        alpha = np.clip((v - v0) / (v1 - v0), 0.0, 1.0)
+        sigma = (1 - alpha) * sigma_hi + alpha * sigma_lo
+
+        action = action.copy()
+        action[0] = float(action[0] + np.random.normal(0.0, sigma))
+
+        # 10% 随机也保留，但只在低压阶段启用（高压阶段关掉，防止推回-20）
+        p_random = 0.1 * (1 - alpha)  # v越高，p_random越小
+        if np.random.rand() < p_random:
+            action[0] = float(np.random.uniform(I_MIN, I_MAX))
+
+        action = np.clip(action, I_MIN, I_MAX).astype(np.float32)
+        
         delta, _ = surrogate(state, action)
+        delta[idx.I_prev] = float(action[0]) - float(state[idx.I_prev])
         next_state = state + delta
         # 防止发散的安全裁剪
-        idx = StateIndex()
+        v_clip = v_max + 0.05   # 例如 4.25
+        t_clip = t_max + 3.0    # 例如 323K
         next_state[idx.SOC_pack] = np.clip(next_state[idx.SOC_pack], 0.0, 1.0)
-        next_state[idx.V_cell_max] = np.clip(next_state[idx.V_cell_max], 0.0, v_max)
-        next_state[idx.T_cell_max] = np.clip(next_state[idx.T_cell_max], 0.0, t_max)
+        next_state[idx.V_cell_max] = np.clip(next_state[idx.V_cell_max], 0.0, v_clip)
+        next_state[idx.T_cell_max] = np.clip(next_state[idx.T_cell_max], 0.0, t_clip)
       
         next_state[idx.I_prev] = float(action[0])
+        
         t += dt
         next_info = state_to_info(next_state, t, float(action[0]))
+
         next_info["violation"] = is_violation(next_state, v_max, t_max) 
         reward = reward_from_info(prev_info, next_info, reward_cfg, v_max, t_max)
         next_info["reward"] = reward
         infos.append(next_info)
         total_reward += reward
+        # ======= 关键：终止条件 =======
+        if next_info["violation"]:
+            next_info["terminated_reason"] = "violation"
+            break
+
+        if next_state[idx.SOC_pack] >= 0.999:
+            next_info["terminated_reason"] = "soc_full"
+            break
         state = next_state
         prev_info = next_info
     return total_reward, infos

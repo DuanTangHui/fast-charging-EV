@@ -112,7 +112,8 @@ def train_adaptive_cycles(
                     ],
                     dtype=np.float32,
                 )
-                transitions.append((s, np.array([infos[i]["I"]], dtype=np.float32), s_next - s))
+                delta = s_next[:11] - s[:11]
+                transitions.append((s, np.array([infos[i]["I"]], dtype=np.float32), delta))
         
       
         states = np.stack([t[0] for t in transitions])
@@ -153,7 +154,6 @@ def train_adaptive_cycles(
                 v_max=env.v_max,
                 t_max=env.t_max,
             )
-            
             metrics = summarize_episode(infos)
             metrics.update({"epoch": epoch, "cycle": cycle, "phase": "adaptive", "reward": total_reward})
             log_metrics(f"{run_dir}/metrics.jsonl", metrics)

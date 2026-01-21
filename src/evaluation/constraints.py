@@ -42,4 +42,6 @@ def is_violation(state: np.ndarray, v_max: float, t_max: float) -> bool:
     """Check whether constraints are violated."""
 
     idx = StateIndex()
-    return state[idx.V_cell_max] > v_max or state[idx.T_cell_max] > t_max
+    v_soft = v_max - 0.03   # 30mV 裕度：4.17V
+    t_soft = t_max - 2.0
+    return state[idx.V_cell_max] >= v_soft or state[idx.T_cell_max] >= t_soft

@@ -25,7 +25,7 @@ class StaticSurrogate:
 
         self.dataset = dataset
         self.model.fit(dataset, epochs=epochs)
-
+    
     def predict(self, state: np.ndarray, action: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """Predict delta state mean and std."""
 

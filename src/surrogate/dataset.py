@@ -5,7 +5,6 @@ from dataclasses import dataclass
 from typing import List, Tuple
 
 import numpy as np
-
 @dataclass
 class TransitionDataset:
     """Storage for (s, a, ds) transitions with normalization."""
@@ -24,7 +23,12 @@ class TransitionDataset:
         """Normalize state and action arrays."""
         states = np.asarray(states, dtype=np.float32)
         actions = actions.astype(np.float32)
-
+        if states.shape[-1] == self.s_mean.shape[0] + 1:
+            states = states[..., :-1]
+        elif states.shape[-1] != self.s_mean.shape[0]:
+            raise ValueError(
+                f"Unexpected state dim {states.shape[-1]} (expected {self.s_mean.shape[0]} or {self.s_mean.shape[0] + 1})."
+            )
         s_std = np.maximum(self.s_std.astype(np.float32), 1e-6)
         a_std = np.maximum(self.a_std.astype(np.float32), 1e-6)
 

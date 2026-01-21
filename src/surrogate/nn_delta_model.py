@@ -75,6 +75,9 @@ class EnsembleDeltaModel:
         y = (dataset.deltas - dataset.d_mean) / (dataset.d_std + 1e-6)
 
         # # ========== 新增：数据质量诊断 ==========
+        # print("deltas_fast shape:", dataset.deltas_fast.shape)   # (N, 11)
+        # print("d_std_fast min:", dataset.d_std_fast.min())
+
         # print_array_stats("x (normalized s+a)", x)
         # print_array_stats("y (normalized delta)", y)
 
@@ -117,7 +120,6 @@ class EnsembleDeltaModel:
         preds_np = np.stack(preds)
         mean = preds_np.mean(axis=0)
         std = preds_np.std(axis=0)
-        # Sanitize outputs to avoid NaN/Inf getting propagated into the simulator.
         mean = np.nan_to_num(mean, nan=0.0, posinf=1e6, neginf=-1e6)
         std = np.nan_to_num(std, nan=1e-6, posinf=1e6, neginf=-1e6)
         std[std < 1e-6] = 1e-6

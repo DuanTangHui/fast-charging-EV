@@ -57,8 +57,8 @@ def main() -> None:
             static_surrogate = torch.load(static_ckpt)
     else:
         static_surrogate = StaticSurrogate(
-            input_dim=env.observation_space.shape[0] + 1,
-            output_dim=env.observation_space.shape[0],
+            input_dim=env.observation_space.shape[0],
+            output_dim=env.observation_space.shape[0] - 1,
             hidden_sizes=config["surrogate"]["hidden_sizes"],
             ensemble_size=config["surrogate"]["ensemble_size"],
             lr=config["surrogate"]["learning_rate"],
@@ -70,14 +70,14 @@ def main() -> None:
             while not done:
                 action = env.action_space.sample()
                 next_state, _, terminated, truncated, _ = env.step(action)
-                transitions.append((state, action, next_state - state))
+                transitions.append((state, action, next_state[:11] - state[:11]))
                 state = next_state
                 done = terminated or truncated
         dataset = build_dataset(transitions)
         static_surrogate.fit(dataset, epochs=5)
     diff_surrogate = DifferentialSurrogate(
-        input_dim=env.observation_space.shape[0] + 1,
-        output_dim=env.observation_space.shape[0],
+        input_dim=env.observation_space.shape[0],
+        output_dim=env.observation_space.shape[0] - 1,
         hidden_sizes=config["surrogate"]["hidden_sizes"],
         ensemble_size=config["surrogate"]["ensemble_size"],
         lr=config["surrogate"]["learning_rate"],
