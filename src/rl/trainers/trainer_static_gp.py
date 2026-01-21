@@ -140,8 +140,7 @@ def collect_real_data(
 
             next_state, _, terminated, truncated, next_info = env.step(action)
 
-            delta = next_state - state
-            delta = next_state[:11] - state[:11]
+            delta = next_state[:6] - state[:6]
             transitions.append((state.copy(), action.copy(), delta.copy()))
 
             state = next_state

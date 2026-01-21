@@ -48,7 +48,7 @@ def main() -> None:
     agent = DDPGAgent(state_dim=env.observation_space.shape[0], action_dim=1, config=rl_cfg)
 
     surrogate = StaticSurrogate(
-        input_dim=env.observation_space.shape[0] ,
+        input_dim=env.observation_space.shape[0] + 1 ,
         output_dim=env.observation_space.shape[0] -1,  # 去掉 I_prev维度
         hidden_sizes=config["surrogate"]["hidden_sizes"],
         ensemble_size=config["surrogate"]["ensemble_size"],

@@ -6,8 +6,8 @@ from typing import Callable, Dict, List, Tuple
 import numpy as np
 
 from ..envs.base_env import BasePackEnv
-from ..rewards.paper_reward import PaperRewardConfig, reward_from_info
-from .constraints import StateIndex, state_to_info, is_violation
+from ..rewards.paper_reward import PaperRewardConfig, reward_from_info, compute_paper_reward
+
 
 
 def rollout_env(
@@ -58,76 +58,153 @@ def rollout_env(
     return total_reward, infos
 
 
+def rollout_env(
+    env: BasePackEnv,
+    policy: Callable[[np.ndarray], np.ndarray],
+    reward_cfg: PaperRewardConfig,
+) -> Tuple[float, List[Dict]]:
+    """Rollout in a real environment."""
+    
+    state, info = env.reset()
+
+    infos: List[Dict] = [info]
+    total_reward = 0.0
+    prev_info = info
+    done = False
+    
+    while not done:
+        action = policy(state)
+        next_state, _, terminated, truncated, next_info = env.step(action)
+        
+        # 使用 reward_from_info 自动提取参数
+        reward = reward_from_info(prev_info, next_info, reward_cfg, env.v_max, env.t_max)
+        
+        next_info["reward"] = reward
+        infos.append(next_info)
+        total_reward += reward
+        state = next_state
+        prev_info = next_info
+        done = terminated or truncated
+
+    print(
+        "episode_end:",
+        "steps=", len(infos)-1,
+        "R=", round(total_reward, 2),
+        "SOC_end=", round(infos[-1]["SOC_pack"], 4),
+        "Vmax=", round(max(i["V_cell_max"] for i in infos), 4),
+        "Tmax=", round(max(i["T_cell_max"] for i in infos), 2),
+        "viol=", infos[-1].get("violation", None),
+        "reason=", infos[-1].get("terminated_reason", None),
+        "I_mean=", round(np.mean([i["I"] for i in infos[1:]]), 2) if len(infos) > 1 else None,
+    )
+
+    return total_reward, infos
+
+
 def rollout_surrogate(
     state: np.ndarray,
-    surrogate: Callable[[np.ndarray, np.ndarray], Tuple[np.ndarray, np.ndarray]],
-    policy: Callable[[np.ndarray], np.ndarray],
+    surrogate: Callable, 
+    policy: Callable,
     horizon: int,
     reward_cfg: PaperRewardConfig,
     dt: float,
     v_max: float,
-    t_max: float,
+    t_max: float
 ) -> Tuple[float, List[Dict]]:
-    """Rollout on surrogate by iterating delta predictions."""
+    """
+    Hao et al. 风格的安全引导 Rollout。
+    处理 (Mean, Std) 预测，并进行不确定性惩罚。
+    """
+    # 状态索引定义 (Hardcoded for 7-dim state)
+    IDX_SOC = 0
+    IDX_STD_SOC = 1
+    IDX_V_MAX = 2
+    IDX_DV = 3
+    IDX_T_MAX = 4
+    IDX_T_MIN = 5
+    IDX_I_PREV = 6
 
-    infos: List[Dict] = []
+    curr_state = state.copy()
     total_reward = 0.0
-    t = 0.0
-    idx = StateIndex()
-    prev_info = state_to_info(state, t, 0.0)
-    I_MIN, I_MAX = -18, -0.3   # 用你的 stats
+    infos = []
+    
+    # 初始化 info
+    curr_info = {
+        "SOC_pack": curr_state[IDX_SOC],
+        "std_SOC": curr_state[IDX_STD_SOC],
+        "V_cell_max": curr_state[IDX_V_MAX],
+        "dV": curr_state[IDX_DV],
+        "T_cell_max": curr_state[IDX_T_MAX],
+        "T_cell_min": curr_state[IDX_T_MIN],
+        "I": curr_state[IDX_I_PREV], 
+        "reward": 0.0,
+        "violation": False
+    }
+    infos.append(curr_info)
+
     for _ in range(horizon):
-        action = policy(state)
-        # === exploration (训练时打开) ===
-        idx = StateIndex()
-        v = float(state[idx.V_cell_max])
+        # 1. 策略动作
+        action = policy(curr_state) 
+        a_val = float(action[0])
 
-        # 电压退火：低压多探索，高压少探索
-        sigma_hi = 2.0
-        sigma_lo = 0.3
-        v0, v1 = 4.05, 4.15  # 4.05开始降噪，4.15以后噪声接近sigma_lo
+        # 2. 预测 (Mean, Std)
+        delta_mean, delta_std = surrogate(curr_state, action)
 
-        alpha = np.clip((v - v0) / (v1 - v0), 0.0, 1.0)
-        sigma = (1 - alpha) * sigma_hi + alpha * sigma_lo
+        # 3. 状态更新
+        next_state = np.zeros_like(curr_state)
+        # 模型预测前6维变化
+        next_state[:6] = curr_state[:6] + delta_mean[:6] 
+        # 第7维 (I_prev) 直接更新为当前动作
+        next_state[IDX_I_PREV] = a_val 
 
-        action = action.copy()
-        action[0] = float(action[0] + np.random.normal(0.0, sigma))
-
-        # 10% 随机也保留，但只在低压阶段启用（高压阶段关掉，防止推回-20）
-        p_random = 0.1 * (1 - alpha)  # v越高，p_random越小
-        if np.random.rand() < p_random:
-            action[0] = float(np.random.uniform(I_MIN, I_MAX))
-
-        action = np.clip(action, I_MIN, I_MAX).astype(np.float32)
+        # 4. 安全检查 (Hao et al. 核心)
+        v_pred_mean = next_state[IDX_V_MAX]
+        v_pred_std = delta_std[IDX_V_MAX]
         
-        delta, _ = surrogate(state, action)
-        delta[idx.I_prev] = float(action[0]) - float(state[idx.I_prev])
-        next_state = state + delta
-        # 防止发散的安全裁剪
-        v_clip = v_max + 0.05   # 例如 4.25
-        t_clip = t_max + 3.0    # 例如 323K
-        next_state[idx.SOC_pack] = np.clip(next_state[idx.SOC_pack], 0.0, 1.0)
-        next_state[idx.V_cell_max] = np.clip(next_state[idx.V_cell_max], 0.0, v_clip)
-        next_state[idx.T_cell_max] = np.clip(next_state[idx.T_cell_max], 0.0, t_clip)
-      
-        next_state[idx.I_prev] = float(action[0])
+        # 悲观估计: Upper Bound
+        v_risk = v_pred_mean + 3.0 * v_pred_std
         
-        t += dt
-        next_info = state_to_info(next_state, t, float(action[0]))
+        safety_penalty = 0.0
+        is_risky = False
+        
+        if v_risk > v_max:
+            is_risky = True
+            safety_penalty = -50.0 
 
-        next_info["violation"] = is_violation(next_state, v_max, t_max) 
-        reward = reward_from_info(prev_info, next_info, reward_cfg, v_max, t_max)
-        next_info["reward"] = reward
-        infos.append(next_info)
-        total_reward += reward
-        # ======= 关键：终止条件 =======
-        if next_info["violation"]:
-            next_info["terminated_reason"] = "violation"
-            break
+        # 5. 计算奖励
+        # 【修改修复点】删除了 t_prev, t_next，修正了参数名
+        r_phys = compute_paper_reward(
+            soc_prev=curr_state[IDX_SOC],
+            soc_next=next_state[IDX_SOC],
+            v_max_next=next_state[IDX_V_MAX],
+            t_max_next=next_state[IDX_T_MAX],
+            std_soc_next=next_state[IDX_STD_SOC], # 参数名对应 paper_reward定义
+            action_current=a_val,                 # 传入当前动作用于惩罚
+            v_limit=v_max,
+            t_limit=t_max,
+            config=reward_cfg
+        )
 
-        if next_state[idx.SOC_pack] >= 0.999:
-            next_info["terminated_reason"] = "soc_full"
+        step_reward = r_phys + safety_penalty
+        total_reward += step_reward
+
+        info = {
+            "SOC_pack": next_state[IDX_SOC],
+            "std_SOC": next_state[IDX_STD_SOC],
+            "V_cell_max": next_state[IDX_V_MAX],
+            "dV": next_state[IDX_DV],
+            "T_cell_max": next_state[IDX_T_MAX],
+            "T_cell_min": next_state[IDX_T_MIN],
+            "I": a_val,
+            "reward": step_reward,
+            "violation": is_risky or (next_state[IDX_V_MAX] > v_max)
+        }
+        infos.append(info)
+
+        # 简单的终止条件
+        if next_state[IDX_SOC] >= 1.0 or next_state[IDX_V_MAX] > (v_max + 0.1):
             break
-        state = next_state
-        prev_info = next_info
+            
+        curr_state = next_state
+
     return total_reward, infos
