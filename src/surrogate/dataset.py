@@ -20,25 +20,16 @@ class TransitionDataset:
     d_std: np.ndarray
 
     def normalize_sa(self, states: np.ndarray, actions: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-        """Normalize state and action arrays."""
         states = np.asarray(states, dtype=np.float32)
-        actions = actions.astype(np.float32)
-        if states.shape[-1] == self.s_mean.shape[0] + 1:
-            states = states[..., :-1]
-        elif states.shape[-1] != self.s_mean.shape[0]:
-            raise ValueError(
-                f"Unexpected state dim {states.shape[-1]} (expected {self.s_mean.shape[0]} or {self.s_mean.shape[0] + 1})."
-            )
+        actions = np.asarray(actions, dtype=np.float32)
+
+        if states.shape[-1] != self.s_mean.shape[0]:
+            raise ValueError(f"Unexpected state dim {states.shape[-1]} (expected {self.s_mean.shape[0]}).")
+
         s_std = np.maximum(self.s_std.astype(np.float32), 1e-6)
         a_std = np.maximum(self.a_std.astype(np.float32), 1e-6)
 
         s_norm = (states - self.s_mean.astype(np.float32)) / s_std
-        # ---- HOTFIX: temperature dims are (almost) constant in current dataset ----
-        # build_observation: dim4=T_cell_max, dim5=T_cell_min
-        # if self.s_std[4] < 0.01:
-        #     s_norm[:,4] = 0
-        # if self.s_std[5] < 0.01:
-        #     s_norm[:,5] = 0
         a_norm = (actions - self.a_mean.astype(np.float32)) / a_std
         return s_norm, a_norm
 
@@ -48,31 +39,38 @@ class TransitionDataset:
         return delta_norm * (self.d_std + 1e-6) + self.d_mean
 
 def build_dataset(transitions: List[Tuple[np.ndarray, np.ndarray, np.ndarray]]) -> TransitionDataset:
-    """Build a normalized dataset from transitions."""
+    """ 
+    transitions: List[(state7, action1, delta6)]
+    - states: (N,7)
+    - actions: (N,1)
+    - deltas: (N,6)  # 只预测前6维变化（不含 Iprev）
+    """
+    states = np.stack([t[0] for t in transitions]).astype(np.float32)
+    actions = np.stack([t[1] for t in transitions]).astype(np.float32)
+    deltas = np.stack([t[2] for t in transitions]).astype(np.float32)
 
-    states = np.stack([t[0] for t in transitions])
-    actions = np.stack([t[1] for t in transitions])
-    deltas = np.stack([t[2] for t in transitions])
+    if states.shape[-1] != 7:
+        raise ValueError(f"Expected state dim 7, got {states.shape[-1]}")
+    if actions.shape[-1] != 1:
+        raise ValueError(f"Expected action dim 1, got {actions.shape[-1]}")
+    if deltas.shape[-1] != 6:
+        raise ValueError(f"Expected delta dim 6, got {deltas.shape[-1]}")
+
     s_mean = states.mean(axis=0)
     s_std = states.std(axis=0)
     a_mean = actions.mean(axis=0)
     a_std = actions.std(axis=0)
     d_mean = deltas.mean(axis=0)
     d_std = deltas.std(axis=0)
-    
-    # Make normalization robust: replace nan/inf and enforce a minimum std to avoid
-    # extremely large normalized values (which can lead to overflow in training).
+
+    # 数值健壮性
     s_std = np.nan_to_num(s_std, nan=1.0, posinf=1.0, neginf=1.0)
     a_std = np.nan_to_num(a_std, nan=1.0, posinf=1.0, neginf=1.0)
     d_std = np.nan_to_num(d_std, nan=1.0, posinf=1.0, neginf=1.0)
-    
-    min_std_s = 1e-3   # 给 state 用更高下限
-    min_std_a = 1e-6
-    min_std_d = 1e-6
 
-    s_std[s_std < min_std_s] = min_std_s
-    a_std[a_std < min_std_a] = min_std_a
-    d_std[d_std < min_std_d] = min_std_d
+    s_std[s_std < 1e-3] = 1e-3
+    a_std[a_std < 1e-6] = 1e-6
+    d_std[d_std < 1e-6] = 1e-6
 
     return TransitionDataset(
         states=states,

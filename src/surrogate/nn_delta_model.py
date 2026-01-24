@@ -64,48 +64,45 @@ class EnsembleDeltaModel:
         self.optimizers = [torch.optim.Adam(model.parameters(), lr=config.learning_rate) for model in self.models]
         self.loss_fn = nn.MSELoss()
 
-    def fit(self, dataset: TransitionDataset, epochs: int = 10) -> None:
+    def fit(self, dataset: TransitionDataset, epochs: int = 10, batch_size: int = 256) -> None:
         """Fit the ensemble on normalized data."""
         print("Using device:", DEVICE)
-
+        # 1. 准备数据（归一化处理）
         s_norm, a_norm = dataset.normalize_sa(dataset.states, dataset.actions)
-        
         x = np.concatenate([s_norm, a_norm], axis=-1)
-       
+        # 手动归一化delta
         y = (dataset.deltas - dataset.d_mean) / (dataset.d_std + 1e-6)
-
-        # # ========== 新增：数据质量诊断 ==========
-        # print("deltas_fast shape:", dataset.deltas_fast.shape)   # (N, 11)
-        # print("d_std_fast min:", dataset.d_std_fast.min())
-
-        # print_array_stats("x (normalized s+a)", x)
-        # print_array_stats("y (normalized delta)", y)
-
-        # # 额外：打印每个维度的统计信息
-        # print("\nPer-dimension stats for y:")
-        # for i in range(y.shape[1]):
-        #     col = y[:, i]
-        #     finite = col[np.isfinite(col)]
-        #     if finite.size > 0:
-        #         print(
-        #             f"dim {i:02d}: "
-        #             f"mean={finite.mean():.4f}, "
-        #             f"std={finite.std():.4f}, "
-        #             f"min={finite.min():.4f}, "
-        #             f"max={finite.max():.4f}"
-        #         )
-        # 如果数据里出现 NaN/Inf，直接替换掉，避免训练炸掉
+       
+        # 2. 数值清洗： 出现NaN/Inf，直接替换掉，避免训练炸掉
         x = np.nan_to_num(x, nan=0.0, posinf=1e6, neginf=-1e6)
         y = np.nan_to_num(y, nan=0.0, posinf=1e6, neginf=-1e6)
+
+        # 3. 转为 Tensor
         x_tensor = torch.tensor(x, dtype=torch.float32, device=DEVICE)
         y_tensor = torch.tensor(y, dtype=torch.float32, device=DEVICE)
-        for _ in range(epochs):
-            for model, opt in zip(self.models, self.optimizers):
-                opt.zero_grad()
-                pred = model(x_tensor)
-                loss = self.loss_fn(pred, y_tensor)
-                loss.backward()
-                opt.step()
+
+        num_samples = x.shape[0]
+
+        for model_idx, (model, opt) in enumerate(zip(self.models, self.optimizers)):
+            indices = np.random.permutation(num_samples)
+            for epoch in range(epochs):
+                epoch_losses = []
+                # Mini-batch 训练
+                for start_idx in range(0, num_samples, batch_size):
+                    batch_indices = indices[start_idx : start_idx + batch_size]
+                    
+                    # 取出一个 batch
+                    batch_x = x_tensor[batch_indices]
+                    batch_y = y_tensor[batch_indices]
+                    
+                    opt.zero_grad()
+                    pred = model(batch_x)
+                    loss = self.loss_fn(pred, batch_y)
+                    loss.backward()
+                    opt.step()
+                    epoch_losses.append(loss.item())
+                avg_loss = np.mean(epoch_losses)
+            print(f"Model {model_idx} trained. Avg Loss: {avg_loss:.6f}")
 
     def predict(self, dataset: TransitionDataset, state: np.ndarray, action: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """Predict delta mean and std using the ensemble."""

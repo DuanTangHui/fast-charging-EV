@@ -1,20 +1,22 @@
 """Reward implementation aligned with updated charging objectives."""
 from __future__ import annotations
+import numpy as np
 
 from dataclasses import dataclass
-from typing import Dict
+from logging import config
+from typing import Dict, Tuple
 
 
 @dataclass
 class PaperRewardConfig:
-    """Reward weights for SOC gain, time, voltage, temperature, consistency, and action penalties."""
+    """ reward 权重"""
 
-    w_soc: float = 20.0     # 提高 SOC 奖励
-    w_time: float = 0.01    # 降低时间惩罚
-    w_v: float = 200.0      # 强电压惩罚
-    w_t: float = 2.0        # 温度惩罚
+    w_soc: float = 50.0     # 提高 SOC 奖励
+    w_time: float = 0.003    # 降低时间惩罚
+    w_v: float = 100.0      # 强电压惩罚
+    w_t: float = 1.0        # 温度惩罚
     w_const: float = 20.0   # 一致性惩罚
-    w_action: float = 0.05  # 【关键】动作(电流)惩罚，防止一直最大电流
+    w_action: float = 0.02  # 【关键】动作(电流)惩罚，防止一直最大电流
 
 
 def compute_paper_reward(
@@ -27,7 +29,7 @@ def compute_paper_reward(
     v_limit: float,
     t_limit: float,
     config: PaperRewardConfig,
-) -> float:
+) -> Tuple[float, float, float, float, float, float, float]:
     """
     核心奖励计算函数 (Core Reward Logic).
     Arguments:
@@ -66,13 +68,27 @@ def compute_paper_reward(
     r_t = -config.w_t * max(0.0, t_max_next - t_limit)
 
     # 5. SOC 一致性惩罚
-    r_const = -config.w_const * max(0.0, std_soc_next)
-
+    # r_const = -config.w_const * max(0.0, std_soc_next)
+    r_const = -config.w_const * max(0.0, std_soc_next - 0.012)
+    
     # 6. 动作惩罚 (Action Penalty)
     # 抑制无脑大电流，引导平滑充电
-    r_action = -config.w_action * (action_current ** 2)
+    soc = soc_next  # 或 soc_prev
 
-    return r_soc + r_time + r_v + r_t + r_const + r_action
+    # 0~1 的门控：soc<0.85 几乎不惩罚；soc>0.95 惩罚拉满
+    gate = np.clip((soc - 0.85) / (0.95 - 0.85), 0.0, 1.0)
+
+    # action_current ∈ [-20, 0]
+    r_action = -(config.w_action * (1.0 + 9.0 * gate)) * (action_current / 20.0) ** 2
+
+    # r_action = -config.w_action * (action_current / 20.0) ** 2
+
+    # r_action = -config.w_action * (action_current ** 2)
+
+    # 或者至少打印：
+    # print("[ACTPEN] w_action=", config.w_action, "a=", action_current, "term=", (action_current/20.0)**2)
+
+    return r_soc + r_time + r_v + r_t + r_const + r_action,r_soc ,r_time ,r_v , r_t , r_const , r_action
 
 
 def reward_from_info(prev: Dict, next_info: Dict, config: PaperRewardConfig, v_limit: float, t_limit: float) -> float:
@@ -84,7 +100,7 @@ def reward_from_info(prev: Dict, next_info: Dict, config: PaperRewardConfig, v_l
     # 尝试获取 SOC std
     std_soc = float(next_info.get("std_SOC", next_info.get("SOC_std", 0.0)))
 
-    r = compute_paper_reward(
+    r,r_soc ,r_time ,r_v , r_t , r_const , r_action = compute_paper_reward(
         soc_prev=float(prev["SOC_pack"]),
         soc_next=float(next_info["SOC_pack"]),
         v_max_next=float(next_info["V_cell_max"]),
@@ -96,4 +112,4 @@ def reward_from_info(prev: Dict, next_info: Dict, config: PaperRewardConfig, v_l
         config=config,
     )
     
-    return r
+    return r,r_soc ,r_time ,r_v , r_t , r_const , r_action

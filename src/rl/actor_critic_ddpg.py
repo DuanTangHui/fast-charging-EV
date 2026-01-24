@@ -12,7 +12,15 @@ from .replay_buffer import ReplayBuffer
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 class RunningNormalizer:
-    """Track running mean/std for state normalization."""
+    """
+    状态归一化：在线估计 mean/std，用于将状态标准化输入网络。
+
+    注意：
+    - early 阶段 count 很小，直接返回原值（避免除零/不稳定）
+    - 支持输入 shape:
+        - (dim,) 单条状态
+        - (batch, dim) 批量状态
+    """
 
     def __init__(self, dim: int, min_std: float = 1e-3) -> None:
         self.dim = dim
@@ -98,39 +106,49 @@ class DDPGConfig:
 
 
 class DDPGAgent:
-    """DDPG agent with target networks."""
+    """  DDPG 智能体：actor/critic + target 网络 + 经验回放 + 状态归一化。"""
 
     def __init__(self, state_dim: int, action_dim: int, config: DDPGConfig) -> None:
+         # 网络
         self.actor = Actor(state_dim, action_dim, [128, 128], config.action_low, config.action_high).to(DEVICE)
         self.critic = Critic(state_dim, action_dim, [128, 128]).to(DEVICE)
         self.target_actor = Actor(state_dim, action_dim, [128, 128], config.action_low, config.action_high).to(DEVICE)
         self.target_critic = Critic(state_dim, action_dim, [128, 128]).to(DEVICE)
+        # target 初始化
         self.target_actor.load_state_dict(self.actor.state_dict())
         self.target_critic.load_state_dict(self.critic.state_dict())
+
         self.actor_opt = torch.optim.Adam(self.actor.parameters(), lr=config.actor_lr)
         self.critic_opt = torch.optim.Adam(self.critic.parameters(), lr=config.critic_lr)
+
         self.config = config
+        # 回放与归一化
         self.buffer = ReplayBuffer(config.buffer_size)
         self.state_norm = RunningNormalizer(state_dim)
 
     def act(self, state: np.ndarray) -> np.ndarray:
-        """Select action from actor network."""
+        """ 根据当前状态选择动作（只做归一化，不更新统计量）。
+        统计量更新放在 observe()，避免“先验泄漏”与重复更新。"""
 
-        self.state_norm.update(state)
+        state = np.asarray(state, dtype=np.float32).reshape(-1)
         state_norm = self.state_norm.normalize(state)
         state_tensor = torch.tensor(state_norm, dtype=torch.float32,
                             device=DEVICE).unsqueeze(0)
         with torch.no_grad():
             action = self.actor(state_tensor).cpu().numpy()[0]
-        return action
+        return action.astype(np.float32)
     
     def observe(self, state: np.ndarray, action: np.ndarray, reward: float, next_state: np.ndarray, done: bool) -> None:
-        """Store transition and update normalization stats."""
+        """
+        存储 transition，并更新归一化统计量。
+        推荐：同时更新 state 和 next_state，使均值/方差更稳定。
+        """
+        self.state_norm.update(state)
         self.state_norm.update(next_state)
         self.buffer.push(state, action, reward, next_state, done)
 
     def update(self) -> Tuple[float, float]:
-        """Update networks from replay buffer."""
+        """从 replay buffer 采样，更新 actor/critic，并软更新 target 网络。"""
 
         if len(self.buffer) < self.config.batch_size:
             return 0.0, 0.0
@@ -145,7 +163,7 @@ class DDPGAgent:
                                     device=DEVICE)
         dones_t = torch.tensor(dones, dtype=torch.float32,
                             device=DEVICE).unsqueeze(-1)
-
+         # -------- critic 目标：y = r + gamma*(1-done)*Q'(s', a') --------
         with torch.no_grad():
             next_actions = self.target_actor(next_states_t)
             target_q = self.target_critic(next_states_t, next_actions)
@@ -153,17 +171,22 @@ class DDPGAgent:
         # 更新critic
         q_val = self.critic(states_t, actions_t)
         critic_loss = torch.mean((q_val - y) ** 2)
+
         self.critic_opt.zero_grad()
         critic_loss.backward()
         self.critic_opt.step()
+
         # 更新actor   
         actor_loss = -self.critic(states_t, self.actor(states_t)).mean()
+
         self.actor_opt.zero_grad()
         actor_loss.backward()
         self.actor_opt.step()
+
         # 软更新目标网络target = (1-tau)*target + tau*source 所以软更新，目标网络更新很慢
         self._soft_update(self.actor, self.target_actor)
         self._soft_update(self.critic, self.target_critic)
+
         return float(actor_loss.item()), float(critic_loss.item())
 
     def _soft_update(self, source: nn.Module, target: nn.Module) -> None:

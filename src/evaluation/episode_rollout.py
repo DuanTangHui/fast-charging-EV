@@ -112,17 +112,23 @@ def rollout_surrogate(
     t_max: float
 ) -> Tuple[float, List[Dict]]:
     """
-    Hao et al. 风格的安全引导 Rollout。
-    处理 (Mean, Std) 预测，并进行不确定性惩罚。
+    用静态代理模型进行 rollout：
+    - 状态 7 维: [SOCmean, stdSOC, Vmax, dV, Tmax, Tmin, Iprev]
+    - surrogate 预测 delta 6 维（不含 Iprev）
+    - next_state[:6] = state[:6] + delta6
+    - next_state[6] = action (近似 I_true)
+    同时加入不确定性悲观惩罚（Hao et al. 风格）。
     """
-    # 状态索引定义 (Hardcoded for 7-dim state)
+    # 状态索引定义 
     IDX_SOC = 0
     IDX_STD_SOC = 1
-    IDX_V_MAX = 2
+    IDX_VMAX = 2
     IDX_DV = 3
-    IDX_T_MAX = 4
-    IDX_T_MIN = 5
-    IDX_I_PREV = 6
+    IDX_TMAX = 4
+    IDX_TMIN = 5
+    IDX_IPREV = 6
+    # ---------- delta 索引----------
+    D_VMAX = 2
 
     curr_state = state.copy()
     total_reward = 0.0
@@ -130,81 +136,136 @@ def rollout_surrogate(
     
     # 初始化 info
     curr_info = {
-        "SOC_pack": curr_state[IDX_SOC],
-        "std_SOC": curr_state[IDX_STD_SOC],
-        "V_cell_max": curr_state[IDX_V_MAX],
-        "dV": curr_state[IDX_DV],
-        "T_cell_max": curr_state[IDX_T_MAX],
-        "T_cell_min": curr_state[IDX_T_MIN],
-        "I": curr_state[IDX_I_PREV], 
+        "t": 0.0,
+        "SOC_pack": float(curr_state[IDX_SOC]),
+        "std_SOC": float(curr_state[IDX_STD_SOC]),
+        "V_cell_max": float(curr_state[IDX_VMAX]),
+        "dV": float(curr_state[IDX_DV]),
+        "T_cell_max": float(curr_state[IDX_TMAX]),
+        "T_cell_min": float(curr_state[IDX_TMIN]),
+        "I": float(curr_state[IDX_IPREV]),       # 当前步采用的电流（这里等于初始 Iprev）
+        "I_prev": float(curr_state[IDX_IPREV]),  # 明确写出口径
         "reward": 0.0,
-        "violation": False
+        "violation": False,
+        "terminated_reason": "reset",
     }
     infos.append(curr_info)
 
-    for _ in range(horizon):
+    for k in range(horizon):
         # 1. 策略动作
         action = policy(curr_state) 
         a_val = float(action[0])
+        # 【核心修复 1】动作对齐
+        infos[-1]["I"] = a_val
 
         # 2. 预测 (Mean, Std)
         delta_mean, delta_std = surrogate(curr_state, action)
-
-        # 3. 状态更新
-        next_state = np.zeros_like(curr_state)
-        # 模型预测前6维变化
-        next_state[:6] = curr_state[:6] + delta_mean[:6] 
-        # 第7维 (I_prev) 直接更新为当前动作
-        next_state[IDX_I_PREV] = a_val 
+        # if k < 3:  # 只打印前3步
+        #     print(
+        #         f"[SHAPE] k={k} "
+        #         f"s={curr_state.shape} "
+        #         f"a={action.shape} "
+        #         f"d_mean={np.array(delta_mean).shape} "
+        #         f"d_std={np.array(delta_std).shape}"
+    # )
+        # 3. 状态更新 只更新前6维；Iprev=action）
+        next_state = curr_state.copy()
+        next_state[:6] = curr_state[:6] + delta_mean
+        next_state[IDX_IPREV] = a_val
 
         # 4. 安全检查 (Hao et al. 核心)
-        v_pred_mean = next_state[IDX_V_MAX]
-        v_pred_std = delta_std[IDX_V_MAX]
+        v_mean = next_state[IDX_VMAX]
+        v_std = delta_std[D_VMAX]
+        v_risk = v_mean + 3.0 * v_std
         
-        # 悲观估计: Upper Bound
-        v_risk = v_pred_mean + 3.0 * v_pred_std
+        # 硬约束检查 (Hard Constraint)
+        viol_hard = (next_state[IDX_VMAX] > v_max) or (next_state[IDX_TMAX] > t_max)
+        is_risky = (v_risk > v_max)
         
-        safety_penalty = 0.0
-        is_risky = False
-        
-        if v_risk > v_max:
-            is_risky = True
-            safety_penalty = -50.0 
+        violation = bool(is_risky or viol_hard)
 
         # 5. 计算奖励
-        # 【修改修复点】删除了 t_prev, t_next，修正了参数名
-        r_phys = compute_paper_reward(
+        r_phys,r_soc ,r_time ,r_v , r_t , r_const , r_action = compute_paper_reward(
             soc_prev=curr_state[IDX_SOC],
             soc_next=next_state[IDX_SOC],
-            v_max_next=next_state[IDX_V_MAX],
-            t_max_next=next_state[IDX_T_MAX],
+            v_max_next=next_state[IDX_VMAX],
+            t_max_next=next_state[IDX_TMAX],
             std_soc_next=next_state[IDX_STD_SOC], # 参数名对应 paper_reward定义
             action_current=a_val,                 # 传入当前动作用于惩罚
             v_limit=v_max,
             t_limit=t_max,
             config=reward_cfg
         )
+        # if len(infos) < 3:
+        #     print(
+        #         f"[RDBG] "
+        #         f"r_soc={r_soc:+.4f} "
+        #         f"r_time={r_time:+.4f} "
+        #         f"r_v={r_v:+.4f} "
+        #         f"r_t={r_t:+.4f} "
+        #         f"r_const={r_const:+.4f} "
+        #         f"r_action={r_action:+.4f} "
+        #         f"| total={r_phys:+.4f} "
+        #         f"| a={a_val:+.3f} stdSOC={next_state[IDX_STD_SOC]:.4f}")
 
-        step_reward = r_phys + safety_penalty
+        # 6.【加入电压势垒 (Voltage Barrier)
+        # 仅有撞墙后的惩罚不够，Agent 需要在撞墙前(4.15V)就感到疼痛。
+        # 假设 compute_paper_reward 里没有这个逻辑，我们需要在这里手动补上。
+        barrier_penalty = 0.0
+        if v_mean > 4.15: # 软约束阈值
+            # 随着电压接近 4.2，惩罚呈指数增长
+            # 4.15V -> -0.2
+            # 4.18V -> -2.0
+            # 4.20V -> -20.0 (加上下面的 safety_penalty，总计 -70)
+            barrier_penalty = -2.0 * np.exp(30.0 * (v_mean - 4.18))
+        
+        # 违规惩罚 (Violation Penalty)
+        safety_penalty = 0.0
+        if violation:
+            safety_penalty = -50.0 # 给予重罚
+
+        step_reward = r_phys + barrier_penalty + safety_penalty
         total_reward += step_reward
 
-        info = {
-            "SOC_pack": next_state[IDX_SOC],
-            "std_SOC": next_state[IDX_STD_SOC],
-            "V_cell_max": next_state[IDX_V_MAX],
-            "dV": next_state[IDX_DV],
-            "T_cell_max": next_state[IDX_T_MAX],
-            "T_cell_min": next_state[IDX_T_MIN],
-            "I": a_val,
+        # 6) violation 与终止条件（尽量贴近真实环境口径）
+        soc_done = float(next_state[IDX_SOC]) >= 0.995
+
+        terminated = soc_done or violation or (k + 1 >= horizon)
+        
+        if violation:
+            reason = "violation"
+        elif soc_done:
+            reason = "soc_full"
+        elif k + 1 >= horizon:
+            reason = "horizon"
+        else:
+            reason = "running"
+
+        infos.append({
+            "t": float((k + 1) * dt),
+            "SOC_pack": float(next_state[IDX_SOC]),
+            "std_SOC": float(next_state[IDX_STD_SOC]),
+            "V_cell_max": float(next_state[IDX_VMAX]),
+            "dV": float(next_state[IDX_DV]),
+            "T_cell_max": float(next_state[IDX_TMAX]),
+            "T_cell_min": float(next_state[IDX_TMIN]),
+            "I": float(0.0),            # 当前动作占位符，将在下一轮 k+1 的开头被填入
+            "I_prev": float(next_state[IDX_IPREV]),       # 上一状态的历史电流（口径统一）
             "reward": step_reward,
-            "violation": is_risky or (next_state[IDX_V_MAX] > v_max)
-        }
-        infos.append(info)
+            "violation": violation,
+            "terminated_reason": reason,
+            "v_risk": v_risk,      # 可选：方便你看3σ风险
+        })
+        # if k < 3:
+        #     print(
+        #         f"k={k}",
+        #         f"a={a_val:.3f}",
+        #         f"next_Iprev(state)={next_state[IDX_IPREV]:.3f}",
+        #     )
 
-        # 简单的终止条件
-        if next_state[IDX_SOC] >= 1.0 or next_state[IDX_V_MAX] > (v_max + 0.1):
-            break
-            
         curr_state = next_state
-
+        if terminated:
+            break
+        # if len(infos) < 12:
+        #     print("a_val", a_val)
     return total_reward, infos

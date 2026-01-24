@@ -138,7 +138,7 @@ def train_adaptive_cycles(
             calib = fast_calibrate(theta_prior, simulator, theta_prior, lambda_prior, steps=10, lr=0.05)
             aging = compute_aging_params(cycle, theta_hat=calib.theta_hat.tolist())
             env.set_aging(aging)
-
+        
         for epoch in range(config.policy_epochs):
             def policy(state: np.ndarray) -> np.ndarray:
                 return env.action_space.sample()

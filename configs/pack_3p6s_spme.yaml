@@ -3,7 +3,6 @@ run_name: pack_3p6s_spme
 backend: liionpack
 
 env:
-  backend: liionpack
   parameter_set: Chen2020
   nproc: 16
   Rb: 1.5e-6
@@ -20,11 +19,14 @@ env:
   observation: 
     include_std: true #包含电池单体电压和温度的标准差->考虑电池单体间的差异
   htc: 10.0
-
+  # ===== reset 随机性 =====
+  soc_init_low: 0.2
+  soc_init_high: 0.3
+  soc_sigma_reset: 0.01   # ⭐ 新增：cell-level SOC 不一致标准差
 
 reward:
-  w_soc: 10.0      # 奖励 SOC 增加
-  w_time: 0.05     # 惩罚时间步 (原 0.01 -> 0.05)
+  w_soc: 50.0      # 奖励 SOC 增加
+  w_time: 0.003     # 惩罚时间步 (原 0.01 -> 0.05)
   w_v: 100.0       # 强电压惩罚 (原 2.0 -> 100.0)
   w_t: 1.0         # 温度惩罚
   w_const: 20.0    # [新增] 一致性惩罚 (SOC std)
