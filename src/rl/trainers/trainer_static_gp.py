@@ -11,7 +11,7 @@ from torch import clip
 from ...envs.base_env import BasePackEnv
 from ...evaluation.episode_rollout import rollout_env, rollout_surrogate
 from ...evaluation.reports import summarize_episode
-from ...rewards.paper_reward import PaperRewardConfig
+from ...rewards.paper_reward import PaperRewardConfig, compute_paper_reward
 from ...surrogate.dataset import build_dataset
 from ...surrogate.gp_static import StaticSurrogate
 from ..actor_critic_ddpg import DDPGAgent
@@ -172,15 +172,16 @@ def collect_real_data(
     agent: DDPGAgent,
     config: Cycle0Config,
 ) -> List[tuple[np.ndarray, np.ndarray, np.ndarray]]:
+    # 1.准备工作
     low = float(agent.config.action_low)   # -20
     high = float(agent.config.action_high) # 0
-
     transitions: List[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
 
+    # 软约束参数
     v_soft = float(getattr(config, "v_soft_max", env.v_max - 0.03))  # 比硬约束低一点，比如 4.17
     t_soft = float(getattr(config, "t_soft_max", env.t_max - 1.5))   # 比硬约束低一点，比如 318.5K
 
-    # 当接近边界时，把电流往 0A 拉
+    # 定义Guard：当接近边界时，把电流往 0A 拉
     def guard_action(action: float, info: dict) -> float:
         v = float(info.get("V_cell_max", -1e9))
         t = float(info.get("T_cell_max", -1e9))
@@ -195,70 +196,96 @@ def collect_real_data(
             return float(np.clip(action + 2.0, low, high))
 
         return action
+    print(f"开始 Model-Free 预训练 (Warm-up) 共 {config.real_episodes} 回合...")
 
     for ep in range(config.real_episodes):
+        # 2. 噪声衰减 (模仿训练过程)
         frac = ep / max(1, config.real_episodes - 1)
-
-        eps_random = (1 - frac) * config.eps_random_start + frac * config.eps_random_end
+        # 预训练阶段可以使用较大的噪声，鼓励探索
         sigma = ((1 - frac) * config.noise_sigma_start + frac * config.noise_sigma_end) * (high - low)
         noise = GaussianNoise(sigma=float(sigma))
 
         state, info = env.reset()
         done = False
 
-        hold = 0
-        held_action = None
-
+        # 统计本回合奖励
+        ep_reward = 0.0
+        current_soc = float(info.get("SOC_pack", state[0]))
         while not done:
-            if held_action is None or hold <= 0:
-               # 1) 候选动作：随机探索 / actor + 高斯噪声
-                if np.random.rand() < eps_random:
-                    # 随机动作：偏向温和（靠近0A），避免大量episode早终止
-                    u = np.random.beta(2.0, 2.0)  # 偏向1
-                    a = low + u * (high - low)    # 更接近 high=0
-                else:
-                    a = float(agent.act(state)[0]) + noise.sample()
+            # --- A. 选择动作 ---
+            raw_action = float(agent.act(state)[0])
+            a_noisy = raw_action + noise.sample()
+            a_clipped = float(np.clip(a_noisy, low, high))
+            #    B.安全守卫（用上一时刻 info）
+            safe_action = guard_action(a_clipped, info)
+            safe_action = float(np.clip(safe_action, low, high))
 
-                a = float(np.clip(a, low, high))
+            # 准备执行的动作
+            action_to_exec = np.array([safe_action], dtype=np.float32)
 
-                # 2) 安全守卫（用上一时刻 info）
-                # 用上一时刻info判断是否需要回退
-                if info is not None:
-                    a = guard_action(a, info)
-                    a = float(np.clip(a, low, high))
+            #   C.环境交互
+            start_state = state.copy()
+            accumulated_reward = 0.0
 
-                # 准备执行的动作
-                action_to_exec = np.array([a], dtype=np.float32)
+            # 执行 hold steps (模拟宏观步长) (Time = t -> t + N*dt) 50s
+            for _ in range(config.hold_steps):
+                # 记录 step 前的 SOC
+                prev_soc = current_soc
 
-                # --- B. 核心：区间采样 (Block Sampling) ---
+                next_state, _, terminated, truncated, next_info = env.step(action_to_exec)
                 
-                # 1. 【快照】记录动作开始瞬间的状态 (Time = t)
-                # 这一步至关重要，它是计算 Delta 的基准
-                start_state = state.copy()
+                # 更新当前的 SOC, V, T 等信息
+                current_soc = float(next_info["SOC_pack"])
+                v_max = float(next_info["V_cell_max"])
+                t_max = float(next_info["T_cell_max"])
+                # 尝试获取 std_soc，如果没有则设为 0
+                std_soc = float(next_info.get("std_SOC", 0.0)) 
                 
-                # 2. 【累积】物理环境推进 N 步 (Time = t -> t + N*dt)
-                for _ in range(config.hold_steps):
-                    # 注意：这里我们忽略了 inner step 的 reward，
-                    # 因为 collect_real_data 只是为了训练 Surrogate Model (S, A -> S')
-                    next_state, _, terminated, truncated, next_info = env.step(action_to_exec)
-                    
-                    # 持续更新 state，这样循环结束时 state 就是 t + N*dt 时刻的状态
-                    state = next_state
-                    info = next_info
-                    
-                    # 如果中途挂了（过压/时间到），立即停止，保留当前的 state 用于计算 Delta
-                    if terminated or truncated:
-                        done = True
-                        break
-                
-                # 3. 【差分】计算长跨度的变化量
-                # Delta = State(t + 50s) - State(t)
-                # 这样算出来的 温度 Delta 会比之前大 5 倍以上！
-                final_delta = state[:6] - start_state[:6]
+                # 手动计算这一小步的奖励
+                # 注意：这里调用你外部定义的 compute_paper_reward
+                r_step, _, _, _, _, _, _ = compute_paper_reward(
+                    soc_prev=prev_soc,
+                    soc_next=current_soc,
+                    v_max_next=v_max,
+                    t_max_next=t_max,
+                    std_soc_next=std_soc,
+                    action_current=safe_action, # 传入实际执行的电流
+                    v_limit=env.v_max,
+                    t_limit=env.t_max,
+                    config=reward_cfg 
+                )
+                # 累积奖励
+                accumulated_reward += r_step
 
-                # 4. 【存储】
-                # 存入 dataset 的是：在 start_state 下，执行 action，导致了 final_delta 的变化
-                transitions.append((start_state.copy(), action_to_exec.copy(), final_delta.copy()))
+                # 状态更新
+                state = next_state
+                info = next_info
+               
+                # 如果中途挂了（过压/时间到），立即停止，保留当前的 state 用于计算 Delta
+                if terminated or truncated:
+                    done = True
+                    break
+            # --- 3. 训练 Agent ---
+            # 存入的是：(0s状态, 50s动作, 50s总奖励, 50s状态)
+            agent.observe(start_state, action_to_exec, accumulated_reward, state, done)
+            # 只有当 buffer 数据够了才 update
+            if len(agent.buffer) > agent.config.batch_size:
+                agent.update()
+            # # --- 4. 收集数据给 GP ---
+            # Delta = State(t + 50s) - State(t)
+            # 这样算出来的 温度 Delta 会比之前大 5 倍以上！
+            final_delta = state[:6] - start_state[:6]
+            # 存入 dataset 的是：在 start_state 下，执行 action，导致了 final_delta 的变化
+            transitions.append((start_state.copy(), action_to_exec.copy(), final_delta.copy()))
+
+            ep_reward += accumulated_reward
+        # 打印日志
+        if (ep + 1) % 5 == 0:
+            print(
+                f"[Warmup] Ep {ep+1} | R: {ep_reward:.2f} | "
+                f"SOC: {info['SOC_pack']:.4f} | Vmax: {info['V_cell_max']:.4f} | "
+                f"Buf: {len(agent.buffer)}"
+            )
 
     return transitions
 
@@ -284,6 +311,7 @@ def train_cycle0(
     config: Cycle0Config,
     run_dir: str,
 ) -> Dict[str, float]:
+    
     """Run Cycle0 training pipeline."""
     # 1) 真实环境采集
     transitions = collect_real_data(env, reward_cfg, agent, config)
@@ -319,27 +347,57 @@ def train_cycle0(
     # 4) 用静态代理训练 RL 策略
     low = float(agent.config.action_low)
     high = float(agent.config.action_high)
+    actor_losses = []
+    critic_losses = []
    
+    print(f"训练开始前 Buffer 大小: {len(agent.buffer)}")
+
     for epoch in range(config.policy_epochs):
-        # 定义带噪声的策略:不能用高斯：actor 初始输出接近 0
-        # 噪声如果为正 → a_noisy > 0 → clip → 0 50% 的动作都变成 0A
-        # 噪声为负 → 才会出现负电流
-        epsilon = max(0.05, 0.3 - epoch / 20.0)
-        def policy_train(s: np.ndarray) -> np.ndarray:
         
-            # 4) clip 回动作范围
-            if np.random.rand() < epsilon:
-                a_final = np.random.uniform(low, high)   # 20% 完全随机
-            else:
-                # 1) actor 输出
-                a = float(agent.act(s)[0])
-                # 2) 简单的对称高斯噪声： sigma 设为 2.0A (即总范围的 10%)
-                sigma = 2.0 
-                a_final = float(np.clip(a + np.random.normal(0, sigma), low, high))
+
+        # --- 1. 动态计算噪声标准差 (Sigma Decay) ---
+        # 随着训练进行，噪声从大变小
+        # 进度 progress: 0.0 -> 1.0
+        progress = epoch / max(1, config.policy_epochs - 1)
+
+        # 设定噪声范围：
+        # start=2.0A (约10%): 依然保持一定的探索能力
+        # end=0.1A (极小): 后期几乎就是确定性策略，为了稳定收敛
+        sigma_start = 2.0
+        sigma_end = 0.1
+        current_sigma = max(sigma_end, sigma_start - (sigma_start - sigma_end) * progress)
+        
+        def policy_train(s: np.ndarray) -> np.ndarray:
+            """ 
+            定义带噪声的策略:不能用高斯：actor 初始输出接近 0
+            噪声如果为正 → a_noisy > 0 → clip → 0 50% 的动作都变成 0A
+            噪声为负 → 才会出现负电流"""
+            # A. 获取 Agent 的建议动作 (这是经过 Warm-up 训练的聪明动作)
+            # 此时 Agent 可能输出 -10A 左右
+            a_det = float(agent.act(s)[0])
+         
+            # B. 生成高斯噪声
+            noise = np.random.normal(0, current_sigma)
+
+            # C. 【可选优化】防止 0A 截断的非对称噪声技巧
+            # 如果当前动作已经很接近 0 (比如 > -2A)，且噪声是正的，这会导致结果 > 0 被截断
+            # 我们强制反转噪声方向，让它往负方向探索
+            if a_det + noise > high:
+                noise = -abs(noise)
+            # 如果 (动作+噪声) 低于下界 -20，强制反转，向正方向探索
+            elif a_det + noise < low:
+                noise = abs(noise)
+            # D. 叠加并裁剪
+            a_noisy = a_det + noise
+            a_final = float(np.clip(a_noisy, low, high))
             return np.array([a_final], dtype=np.float32)
         
         def policy_cc(s: np.ndarray) -> np.ndarray:
-                return np.array([-5.0], dtype=np.float32)
+                return np.array([-10.0], dtype=np.float32)
+        
+        # 临时列表记录本 epoch 的 loss
+        epoch_a_loss = []
+        epoch_c_loss = []
         for rollout_idx in range(config.policy_rollouts_per_epoch):
             # 起点：第一个从 reset，后面从真实数据分布抽样
             if rollout_idx == 0:
@@ -350,22 +408,22 @@ def train_cycle0(
             total_reward, infos = rollout_surrogate(
                 state=state0,
                 surrogate=surrogate.predict,
-                policy=policy_cc,
+                policy=policy_train,
                 horizon=env.max_steps,
                 reward_cfg=reward_cfg,
                 dt=env.dt,
                 v_max=env.v_max,
                 t_max=env.t_max,
             )
-            print(
-                "[CC] R", round(total_reward, 2),
-                "SOC_end", round(infos[-1]["SOC_pack"], 4),
-                "Vmax", round(max(i["V_cell_max"] for i in infos), 4),
-                "Tmax", round(max(i["T_cell_max"] for i in infos), 2),
-                "I_mean", round(np.mean([i["I"] for i in infos[:-1]]), 3),
-                "violations:", sum(1 for x in infos if x.get("violation", False)),
-                "reason:", infos[-1]["terminated_reason"],
-            )
+            # print(
+            #     "[CC] R", round(total_reward, 2),
+            #     "SOC_end", round(infos[-1]["SOC_pack"], 4),
+            #     "Vmax", round(max(i["V_cell_max"] for i in infos), 4),
+            #     "Tmax", round(max(i["T_cell_max"] for i in infos), 2),
+            #     "I_mean", round(np.mean([i["I"] for i in infos[:-1]]), 3),
+            #     "violations:", sum(1 for x in infos if x.get("violation", False)),
+            #     "reason:", infos[-1]["terminated_reason"],
+            # )
             if rollout_idx == 0:
                 print(
                     "epoch", epoch,
@@ -422,6 +480,7 @@ def train_cycle0(
                 #     print("[CHK] t", t, "a", a_val, "s_Iprev", s[-1], "snext_Iprev", s_next[-1], "r", r, "done", done)
 
                 agent.observe(s, a, r, s_next, done)
+
                 # --- 统计 actions 分布 ---
                 total_cnt += 1
                 if abs(a_val) < 1e-8:
@@ -430,13 +489,33 @@ def train_cycle0(
                 a_max = max(a_max, a_val)
                 a_sum += a_val
                 a_sq += a_val * a_val
+
             # --- for t 循环结束后（每个 rollout 打印一次）---
             mean = a_sum / max(1, total_cnt)
             var = a_sq / max(1, total_cnt) - mean**2
             std = (var if var > 0 else 0.0) ** 0.5
             print(f"[BUF] actions: zero_ratio={zero_cnt/total_cnt:.3f} mean={mean:.3f} std={std:.3f} min={a_min:.3f} max={a_max:.3f}")
+    
 
+        # --- 【修改点 3】: 更新并记录 Loss ---
+        # 确保 Agent 在每个 epoch 结束时进行多次更新
         for _ in range(config.updates_per_epoch):
-            agent.update()
+            # 只有当 buffer 够大时才 update
+            if len(agent.buffer) > agent.config.batch_size:
+                # 假设 update 返回 (actor_loss, critic_loss)
+                # 如果你的 update 没有返回值，需要去修改 DDPGAgent.update
+                loss_a, loss_c = agent.update()
+                epoch_a_loss.append(loss_a)
+                epoch_c_loss.append(loss_c)
+        
+        # 打印平均 Loss
+        if epoch_a_loss:
+            avg_a = np.mean(epoch_a_loss)
+            avg_c = np.mean(epoch_c_loss)
+            print(f"       -> Loss | Actor: {avg_a:.4f} | Critic: {avg_c:.4f}")
+            actor_losses.append(avg_a)
+            critic_losses.append(avg_c)
+        # for _ in range(config.updates_per_epoch):
+        #     agent.update()
 
     return {"transitions": len(transitions)}

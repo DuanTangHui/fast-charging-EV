@@ -60,7 +60,11 @@ def main() -> None:
 
     train_cycle0(env, agent, reward_cfg, surrogate, cycle0_cfg, str(run_dir))
 
-    torch.save(agent.actor.state_dict(), run_dir / "policy.pt")
+    # torch.save(agent.actor.state_dict(), run_dir / "policy.pt")
+    torch.save({
+        "actor": agent.actor.state_dict(),
+        "state_norm": agent.state_norm,  # <--- 关键！保存这个对象
+    }, run_dir / "policy.pt")
     torch.save(surrogate, run_dir / "static_surrogate.pt")
 
 
