@@ -13,4 +13,4 @@ class GaussianNoise:
     sigma: float
 
     def sample(self) -> float:
-        return float(np.random.normal(0.0, self.sigma))
+        return float(np.random.normal((0.0), self.sigma))

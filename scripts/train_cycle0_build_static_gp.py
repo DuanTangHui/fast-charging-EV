@@ -48,8 +48,8 @@ def main() -> None:
     agent = DDPGAgent(state_dim=env.observation_space.shape[0], action_dim=1, config=rl_cfg)
 
     surrogate = StaticSurrogate(
-        input_dim=env.observation_space.shape[0] + 1,
-        output_dim=env.observation_space.shape[0],
+        input_dim=env.observation_space.shape[0] + 1 ,  # state(7) + action(1)
+        output_dim=env.observation_space.shape[0] -1,  # 预测 delta 的前 6 维（不预测 Iprev）
         hidden_sizes=config["surrogate"]["hidden_sizes"],
         ensemble_size=config["surrogate"]["ensemble_size"],
         lr=config["surrogate"]["learning_rate"],
@@ -65,4 +65,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+     main()

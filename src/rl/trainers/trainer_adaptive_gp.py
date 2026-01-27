@@ -57,23 +57,28 @@ def train_adaptive_cycles(
         segments = []
         transitions: List[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
         for _ in range(config.real_episodes_per_cycle):
-            def safe_random(_s):
-                # base: 随机充电电流（负数）
-                low = float(env.action_space.low[0])
-                high = float(env.action_space.high[0])
-                I = float(np.random.uniform(low, high))
+            def guarded_random(state: np.ndarray) -> np.ndarray:
+                # 默认随机
+                a = np.random.uniform(-20.0, 0.0, size=(1,)).astype(np.float32)
 
-                vmax = getattr(env, "_last_vmax", None)
-                if vmax is not None:
-                    if vmax > 4.19:
-                        I = 0.0
-                    elif vmax > 4.15:
-                        I = max(I, -2.0)
-                    elif vmax > 4.10:
-                        I = max(I, -8.0)
+                # 从 env 里拿上一步 info
+                env = guarded_random.env_ref
+                last = getattr(env, "_last_info", None)
+               
+                if last is None:
+                    return a
 
-                return np.array([I], dtype=np.float32)
-            total_reward, infos = rollout_env(env, safe_random, reward_cfg)
+                v = float(last.get("V_cell_max", 0.0))
+
+                # 电压守门（给 dt=30s 留缓冲）
+                if v > 4.195:
+                    return np.array([0.0], dtype=np.float32)
+                if v > 4.18:
+                    return np.array([-2.0], dtype=np.float32)
+
+                return a
+            guarded_random.env_ref = env
+            total_reward, infos = rollout_env(env, guarded_random, reward_cfg)
             segments.append(
                 {
                     "soc": np.array([info["SOC_pack"] for info in infos]),
@@ -86,16 +91,11 @@ def train_adaptive_cycles(
                 s = np.array(
                     [
                         infos[i]["SOC_pack"],
+                        infos[i].get("std_SOC", 0.0),
                         infos[i]["V_cell_max"],
-                        infos[i]["V_cell_min"],
                         infos[i]["dV"],
                         infos[i]["T_cell_max"],
                         infos[i]["T_cell_min"],
-                        infos[i]["dT"],
-                        0.0,
-                        0.0,
-                        0.0,
-                        1.0,
                         infos[i]["I"],
                     ],
                     dtype=np.float32,
@@ -103,21 +103,17 @@ def train_adaptive_cycles(
                 s_next = np.array(
                     [
                         infos[i + 1]["SOC_pack"],
+                        infos[i + 1].get("std_SOC", 0.0),
                         infos[i + 1]["V_cell_max"],
-                        infos[i + 1]["V_cell_min"],
                         infos[i + 1]["dV"],
                         infos[i + 1]["T_cell_max"],
                         infos[i + 1]["T_cell_min"],
-                        infos[i + 1]["dT"],
-                        0.0,
-                        0.0,
-                        0.0,
-                        1.0,
                         infos[i + 1]["I"],
                     ],
                     dtype=np.float32,
                 )
-                transitions.append((s, np.array([infos[i]["I"]], dtype=np.float32), s_next - s))
+                delta = s_next[:11] - s[:11]
+                transitions.append((s, np.array([infos[i]["I"]], dtype=np.float32), delta))
         
       
         states = np.stack([t[0] for t in transitions])
@@ -142,7 +138,7 @@ def train_adaptive_cycles(
             calib = fast_calibrate(theta_prior, simulator, theta_prior, lambda_prior, steps=10, lr=0.05)
             aging = compute_aging_params(cycle, theta_hat=calib.theta_hat.tolist())
             env.set_aging(aging)
-
+        
         for epoch in range(config.policy_epochs):
             def policy(state: np.ndarray) -> np.ndarray:
                 return env.action_space.sample()

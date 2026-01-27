@@ -25,27 +25,48 @@ class StaticSurrogate:
 
         self.dataset = dataset
         self.model.fit(dataset, epochs=epochs)
-
+    
     def predict(self, state: np.ndarray, action: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """Predict delta state mean and std."""
 
         if self.dataset is None:
             raise RuntimeError("Static surrogate has not been fit.")
-        # 1. 模型输出的是归一化的值（比如 0 到 1 之间）
-        mean, std = self.model.predict(self.dataset, state, action)
-        # 2. 反归一化：将神经网络的输出转换回物理单位（如 V, K, SOC）
-        delta = self.dataset.denormalize_delta(mean)
-        # 3. 标准差也需要反归一化，注意这里的 scale 操作
-        delta_std = std * (self.dataset.d_std + 1e-6)
-        return delta, delta_std
+       
+        # 1. 获取归一化的预测值
+        # 注意：底层模型返回的是 (D,) 的一维数组
+        norm_mean, norm_std = self.model.predict(self.dataset, state, action)
+
+        # 2. 反归一化： 将神经网络的输出转换回物理单位 (如 V, K, SOC)
+        # 公式: Real = Norm * Std + Mean
+        delta_phys = norm_mean * (self.dataset.d_std + 1e-6) + self.dataset.d_mean
+        delta_std_phys = norm_std * (self.dataset.d_std + 1e-6)
+
+        # 3. 【核心物理约束】: 强制温度不下降
+        # 如果预测值 < 0，强制设为 0。
+        # 这样 DDPG 就不会因为害怕降温（实际上不可能）而乱来了。
+        t_idx = -2  # 温度是倒数第2个
+        # 检查维度并应用约束
+        if delta_phys.ndim == 1:
+            # 单样本预测
+            delta_phys[t_idx] = max(0.0, delta_phys[t_idx])
+        else:
+            # Batch 预测
+            delta_phys[:, t_idx] = np.maximum(delta_phys[:, t_idx], 0.0)
+
+        return delta_phys, delta_std_phys
+
 
     def rollout(self, state: np.ndarray, policy: Callable[[np.ndarray], np.ndarray], horizon: int) -> np.ndarray:
         """Rollout the surrogate model for a horizon."""
-        traj = [state]
-        current = state
+        traj = [state.astype(np.float32)]
+        s = traj[0].copy()
+
         for _ in range(horizon):
-            action = policy(current)
-            delta, _ = self.predict(current, action)
-            current = current + delta
-            traj.append(current)
+            action = policy(s) # (1,)
+            delta, _ = self.predict(s, action) # (6,)
+            s_next = s.copy()
+            s_next[:6] = s[:6] + delta                   # 只更新前 6 维
+            s_next[6] = float(action[0])                   # Iprev_{t+1} = action（近似 I_true）
+            traj.append(s_next)
+            s = s_next  
         return np.stack(traj)

@@ -5,26 +5,27 @@ backend: liionpack
 env:
   backend: liionpack
   parameter_set: Chen2020
-  nproc: 2
+  nproc: 16
   Rb: 1.5e-6
   Rc: 1e-2
   Ri_init: 5e-2
   ocv_init: 4.0
-  dt: 30.0 # RL每30s决策一次
-  max_steps: 240 #RL每个episode最多240步
+  dt: 10.0 # RL每30s决策一次
+  max_steps: 720 #RL每个episode最多720步
   v_max: 4.2 #单体电池最高电压
   t_max: 333.15 #单体电池最高温度 （单位K即60℃）
-  pack_cells_p: 3 #电池包串联3个单体电池
-  pack_cells_s: 6 #电池包并联6个单体电池
+  pack_cells_p: 3 #电池包并联3个单体电池
+  pack_cells_s: 6 #电池包串联6个单体电池
   terminate_on_violation: true #是否在违反约束时终止episode
   observation: 
     include_std: true #包含电池单体电压和温度的标准差->考虑电池单体间的差异
   htc: 10.0  
 reward:
   w_soc: 10.0
-  w_time: 0.01
-  w_v: 2.0
+  w_time: 0.05
+  w_v: 100.0
   w_t: 1.0
+  w_const: 20.0
   # enable_pack_extensions: false
 
 rl:
@@ -48,7 +49,7 @@ trainer:
   cycle0:
     real_episodes: 6
     surrogate_epochs: 25
-    policy_epochs: 8
+    policy_epochs: 6
   adaptive:
     cycles: 3
     real_episodes_per_cycle: 2

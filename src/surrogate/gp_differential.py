@@ -32,6 +32,15 @@ class DifferentialSurrogate:
         if self.dataset is None:
             raise RuntimeError("Differential surrogate has not been fit.")
         mean, std = self.model.predict(self.dataset, state, action)
-        delta = self.dataset.denormalize_delta(mean)
-        delta_std = std * (self.dataset.d_std + 1e-6)
+        delta_fast = self.dataset.denormalize_delta(mean)
+        delta_fast_std = std * (self.dataset.d_std + 1e-6)
+
+        obs_dim = state.shape[0]
+        delta = np.zeros(obs_dim, dtype=float)
+        delta_std = np.zeros(obs_dim, dtype=float)
+        delta[: delta_fast.shape[0]] = delta_fast
+        delta_std[: delta_fast_std.shape[0]] = delta_fast_std
+        if obs_dim > delta_fast.shape[0]:
+            delta[-1] = 0.0
+            delta_std[-1] = 1e-6
         return delta, delta_std
