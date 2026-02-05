@@ -271,7 +271,16 @@ class LiionpackSPMEPackEnv(BasePackEnv):
         if seed is not None:
             self._rng = np.random.default_rng(seed)
 
-        soc_mean = float(self._rng.uniform(self._soc_init_low, self._soc_init_high))
+        # soc_mean = float(self._rng.uniform(self._soc_init_low, self._soc_init_high))
+        # 修改soc初始范围，这样就可以收集数据的时候收集到很多不同时刻的soc充电策略
+        if options is None:
+            options = {}
+            
+        low = options.get("soc_low", self._soc_init_low)
+        high = options.get("soc_high", self._soc_init_high)
+        
+        # 确保数据类型正确
+        soc_mean = float(self._rng.uniform(low, high))
         initial_soc = soc_mean
         self._lp_setup_on_reset(initial_soc)
 
@@ -302,6 +311,7 @@ class LiionpackSPMEPackEnv(BasePackEnv):
         info = self._build_info(
             t=0.0,
             current=0.0,
+            prev_i=0.0,  
             soc=soc,
             v_cells=v_cells,
             t_cells=t_cells,
@@ -318,7 +328,8 @@ class LiionpackSPMEPackEnv(BasePackEnv):
     def step(self, action: np.ndarray) -> Tuple[np.ndarray, float, bool, bool, Dict]:
         if self._state is None:
             raise RuntimeError("必须先 reset() 再 step().")
-
+        # 保存上一个动作
+        prev_i = float(self._state.i_prev)
         # 动作电流裁剪（例如 [-20,0]）
         current = float(np.clip(action[0], self.action_space.low[0], self.action_space.high[0]))
         # 执行一步
@@ -370,16 +381,21 @@ class LiionpackSPMEPackEnv(BasePackEnv):
         v_max = float(np.max(v_cells))
         t_max = float(np.max(t_cells))
         # 安全约束 （是否违约）
-        violation = (v_max > self.v_max) or (t_max > self.t_max) or (not lp_info["vlims_ok"])
+        viol_hard = (v_max > self.v_max) or (t_max > self.t_max) 
+        viol_internal = (not lp_info["vlims_ok"])
+        violation = viol_hard                      # ✅ violation 只管硬约束
+        truncated = bool(viol_internal)            # ✅ 内部失败用 truncated
 
         soc_done = soc_pack >= 0.995
         horizon_done = self._lp_step >= self.max_steps
         # 终止条件  
         terminated = horizon_done or soc_done or (self.terminate_on_violation and violation)
-        truncated = False
+        
 
         if violation:
-            reason = "violation"
+            reason = "violation_hard"
+        elif truncated:
+            reason = "violation_internal"
         elif soc_done:
             reason = "soc_full"
         elif horizon_done:
@@ -392,6 +408,7 @@ class LiionpackSPMEPackEnv(BasePackEnv):
         info = self._build_info(
             t=float(self._lp_step * self.dt),
             current=current,
+            prev_i=prev_i,
             soc=soc,
             v_cells=v_cells,
             t_cells=t_cells,
@@ -402,6 +419,7 @@ class LiionpackSPMEPackEnv(BasePackEnv):
             reason=reason,
             extra=lp_info,
         )
+        
         self._last_info = info
         # if self._lp_step < 10:
         #     print(
@@ -419,6 +437,7 @@ class LiionpackSPMEPackEnv(BasePackEnv):
         *,
         t: float,
         current: float,
+        prev_i: float,
         soc: np.ndarray,
         v_cells: np.ndarray,
         t_cells: np.ndarray,
@@ -443,7 +462,7 @@ class LiionpackSPMEPackEnv(BasePackEnv):
 
             # 动作 setpoint
             "I": float(current),
-            "I_prev": float(current),
+            "I_prev": float(prev_i),
 
             # liionpack 真实执行
             "I_pack_true": float(I_pack_true),

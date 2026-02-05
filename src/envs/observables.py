@@ -91,10 +91,25 @@ def curve_from_infos(infos: Sequence[Dict]) -> Dict[str, list[float]]:
         "dV": [],
         "dT": [],
         "reward": [],
+        "r_soc": [],
+        "r_v": [],
+        "r_action": [],
+
     }
 
-    for info in infos:
+    # infos[0] 是 reset 行，不包含真正的 transition
+    for info in infos[1:]:
         for key in curves:
-            curves[key].append(float(info.get(key, 0.0)))
+            # info中没有dT和V_cell_min，需要特殊处理
+            if key == "dT":
+                t_max = float(info.get("T_cell_max", 0.0))
+                t_min = float(info.get("T_cell_min", 0.0))
+                curves["dT"].append(t_max - t_min)
+            elif key == "V_cell_min":
+                v_max = float(info.get("V_cell_max", 0.0))
+                dV = float(info.get("dV", 0.0))
+                curves["V_cell_min"].append(v_max - dV)
+            else:
+                curves[key].append(float(info.get(key, 0.0)))
 
     return curves

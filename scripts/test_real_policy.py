@@ -125,7 +125,7 @@ def main() -> None:
         raise FileNotFoundError(f"Policy file not found: {policy_path}")
     
     print(f"Loading policy weights from {policy_path}...")
-    checkpoint = torch.load(policy_path, map_location=DEVICE)
+    checkpoint = torch.load(policy_path, map_location=DEVICE, weights_only=False)
 
     # [修改] 兼容加载逻辑
     if isinstance(checkpoint, dict) and "actor" in checkpoint:

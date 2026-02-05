@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import argparse
 import sys
-import os
 from pathlib import Path
 
 # 获取当前脚本的绝对路径
