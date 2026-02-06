@@ -205,7 +205,8 @@ def collect_real_data(
         sigma = ((1 - frac) * config.noise_sigma_start + frac * config.noise_sigma_end) * (high - low)
         noise = GaussianNoise(sigma=float(sigma))
 
-        state, info = env.reset()
+        # state, info = env.reset()
+        state, info = env.reset(options={"soc_low": 0.1, "soc_high": 0.9})
         done = False
 
         # 统计本回合奖励

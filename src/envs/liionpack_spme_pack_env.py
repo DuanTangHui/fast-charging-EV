@@ -271,7 +271,18 @@ class LiionpackSPMEPackEnv(BasePackEnv):
         if seed is not None:
             self._rng = np.random.default_rng(seed)
 
-        soc_mean = float(self._rng.uniform(self._soc_init_low, self._soc_init_high))
+        # ================= 改动开始 =================
+        # 优先从 options 读取范围，如果没有则使用 self._soc_init_low/high
+        if options is None:
+            options = {}
+            
+        low = options.get("soc_low", self._soc_init_low)
+        high = options.get("soc_high", self._soc_init_high)
+        
+        # 确保数据类型正确
+        soc_mean = float(self._rng.uniform(low, high))
+
+        # soc_mean = float(self._rng.uniform(self._soc_init_low, self._soc_init_high))
         initial_soc = soc_mean
         self._lp_setup_on_reset(initial_soc)
 

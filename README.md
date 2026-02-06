@@ -52,6 +52,8 @@ reward weights, and environment settings.
 
 -训练数据与归一化逻辑在 `src/surrogate/dataset.py`（你遇到的 overflow 已修复）。
 
+-测试： `python scripts/test_real_policy.py --config configs/pack_3p6s_spme.yaml --policy runs/cycle0/policy.pt`
+
 ## 5.SOH 先验与快速标定
 
 -SOH Predictor（目前 Dummy）在 `src/soh_prior/stapinn_predictor.py`，特征提取在    `src/soh_prior/feature_extraction.py `，SOH→参数先验在 `src/soh_prior/soh2param_mapper.py`。

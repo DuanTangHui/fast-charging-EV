@@ -6,9 +6,9 @@ env:
   parameter_set: Chen2020
   nproc: 16
   Rb: 1.5e-6
-  Rc: 1e-2 # Rc=0.01（10 mΩ）：可能偏大或偏保守
+  Rc: 5e-3  # Rc=0.01（10 mΩ）：可能偏大或偏保守
   Ri_init: 5e-3
-  ocv_init: 4.0  # ocv_init=4.0：作为“初值猜测”勉强可以，但会增加求解压力reset 里 initial_soc 在 0.2~0.3，而对应 OCV 通常不在 4.0V 这么高的区间（具体看参数集/OCV曲线）。
+  ocv_init: 3.5  # ocv_init=4.0：作为“初值猜测”勉强可以，但会增加求解压力reset 里 initial_soc 在 0.2~0.3，而对应 OCV 通常不在 4.0V 这么高的区间（具体看参数集/OCV曲线）。
   dt: 10.0 # RL每10s决策一次
   max_steps: 230 #RL每个episode最多720步
   v_max: 4.2 #单体电池最高电压
@@ -46,12 +46,12 @@ rl:
 
 surrogate:
   hidden_sizes: [128, 128]
-  ensemble_size: 3
+  ensemble_size: 5
   learning_rate: 0.001
 
 trainer:
   cycle0:
-    real_episodes: 6
+    real_episodes: 50
     surrogate_epochs: 25
     policy_epochs: 50
   adaptive:
