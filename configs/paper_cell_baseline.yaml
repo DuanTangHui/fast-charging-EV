@@ -29,8 +29,8 @@ rl:
   batch_size: 64
   buffer_size: 50000
   exploration_sigma: 0.3
-  action_low: 0.0
-  action_high: 60.0
+  action_low: -35.0
+  action_high: 0.0
   train_steps_per_epoch: 200
 
 surrogate:

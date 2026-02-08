@@ -59,7 +59,7 @@ def train_adaptive_cycles(
         for _ in range(config.real_episodes_per_cycle):
             def guarded_random(state: np.ndarray) -> np.ndarray:
                 # 默认随机
-                a = np.random.uniform(-20.0, 0.0, size=(1,)).astype(np.float32)
+                a = np.random.uniform(-30.0, 0.0, size=(1,)).astype(np.float32)
 
                 # 从 env 里拿上一步 info
                 env = guarded_random.env_ref

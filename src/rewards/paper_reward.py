@@ -78,8 +78,8 @@ def compute_paper_reward(
     # 0~1 的门控：soc<0.85 几乎不惩罚；soc>0.95 惩罚拉满
     gate = np.clip((soc - 0.85) / (0.95 - 0.85), 0.0, 1.0)
 
-    # action_current ∈ [-20, 0]
-    r_action = -(config.w_action * (1.0 + 9.0 * gate)) * (action_current / 20.0) ** 2
+    # action_current ∈ [-30, 0]
+    r_action = -(config.w_action * (1.0 + 9.0 * gate)) * (action_current / 30.0) ** 2
 
     # r_action = -config.w_action * (action_current / 20.0) ** 2
 

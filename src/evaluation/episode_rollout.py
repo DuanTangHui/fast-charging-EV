@@ -9,55 +9,6 @@ from ..envs.base_env import BasePackEnv
 from ..rewards.paper_reward import PaperRewardConfig, reward_from_info, compute_paper_reward
 
 
-
-def rollout_env(
-    env: BasePackEnv,
-    policy: Callable[[np.ndarray], np.ndarray],
-    reward_cfg: PaperRewardConfig,
-) -> Tuple[float, List[Dict]]:
-    """Rollout in a real environment."""
-    
-    state, info = env.reset()
-    print("real env info keys:", sorted(info.keys()))
-
-    infos: List[Dict] = [info]
-    total_reward = 0.0
-    prev_info = info
-    done = False
-    while not done:
-        action = policy(state)
-        next_state, _, terminated, truncated, next_info = env.step(action)
-        reward = reward_from_info(prev_info, next_info, reward_cfg, env.v_max, env.t_max)
-        next_info["reward"] = reward
-        infos.append(next_info)
-        total_reward += reward
-        state = next_state
-        prev_info = next_info
-        done = terminated or truncated
-        if len(infos) < 5:
-            print("policy_action:", action)
-
-        # rollout_env 末尾 return 前
-    print("policy:", getattr(policy, "__name__", type(policy).__name__))
-
-    print(
-        "episode_end:",
-        "steps=", len(infos)-1,
-        "R=", round(total_reward, 2),
-        "SOC_end=", round(infos[-1]["SOC_pack"], 4),
-        "Vmax=", round(max(i["V_cell_max"] for i in infos), 4),
-        "Tmax=", round(max(i["T_cell_max"] for i in infos), 2),
-        "viol=", infos[-1].get("violation", None),
-        "reason=", infos[-1].get("terminated_reason", None),
-        "I_mean=", round(np.mean([i["I"] for i in infos[1:]]), 2) if len(infos) > 1 else None,
-        "I_min=", round(np.min([i["I"] for i in infos[1:]]), 2) if len(infos) > 1 else None,
-        "I_exec_mean=", round(np.mean([i.get("I_pack_est", i["I"]) for i in infos[1:]]), 2),
-        "I_exec_min=", round(np.min([i.get("I_pack_est", i["I"]) for i in infos[1:]]), 2),
-    )
-
-    return total_reward, infos
-
-
 def rollout_env(
     env: BasePackEnv,
     policy: Callable[[np.ndarray], np.ndarray],
@@ -147,27 +98,34 @@ def rollout_surrogate(
         "I_prev": float(curr_state[IDX_IPREV]),  # 明确写出口径
         "reward": 0.0,
         "violation": False,
+        "viol_hard": False,
+        "is_risky": False,
         "terminated_reason": "reset",
     }
+    BASE_TERMS = {
+        "delta_soc": 0.0,
+        "v_soft": False,
+        "i_abs": 0.0,
+        "r_soc": 0.0,
+        "r_track": 0.0,
+        "r_finish": 0.0,
+        "r_v": 0.0,
+        "r_t": 0.0,
+        "r_const": 0.0,
+        "r_action": 0.0,
+        "r_time": 0.0,
+    }
+    curr_info.update(BASE_TERMS)
     infos.append(curr_info)
 
     for k in range(horizon):
         # 1. 策略动作
         action = policy(curr_state) 
         a_val = float(action[0])
-        # 【核心修复 1】动作对齐
-        infos[-1]["I"] = a_val
-
+        
         # 2. 预测 (Mean, Std)
         delta_mean, delta_std = surrogate(curr_state, action)
-        # if k < 3:  # 只打印前3步
-        #     print(
-        #         f"[SHAPE] k={k} "
-        #         f"s={curr_state.shape} "
-        #         f"a={action.shape} "
-        #         f"d_mean={np.array(delta_mean).shape} "
-        #         f"d_std={np.array(delta_std).shape}"
-    # )
+       
         # 3. 状态更新 只更新前6维；Iprev=action）
         next_state = curr_state.copy()
         next_state[:6] = curr_state[:6] + delta_mean
@@ -182,7 +140,7 @@ def rollout_surrogate(
         viol_hard = (next_state[IDX_VMAX] > v_max) or (next_state[IDX_TMAX] > t_max)
         is_risky = (v_risk > v_max)
         
-        violation = bool(is_risky or viol_hard)
+        violation = bool(viol_hard)
 
         # 5. 计算奖励
         r_phys,r_soc ,r_time ,r_v , r_t , r_const , r_action = compute_paper_reward(
@@ -196,17 +154,6 @@ def rollout_surrogate(
             t_limit=t_max,
             config=reward_cfg
         )
-        # if len(infos) < 3:
-        #     print(
-        #         f"[RDBG] "
-        #         f"r_soc={r_soc:+.4f} "
-        #         f"r_time={r_time:+.4f} "
-        #         f"r_v={r_v:+.4f} "
-        #         f"r_t={r_t:+.4f} "
-        #         f"r_const={r_const:+.4f} "
-        #         f"r_action={r_action:+.4f} "
-        #         f"| total={r_phys:+.4f} "
-        #         f"| a={a_val:+.3f} stdSOC={next_state[IDX_STD_SOC]:.4f}")
 
         # 6.【加入电压势垒 (Voltage Barrier)
         # 仅有撞墙后的惩罚不够，Agent 需要在撞墙前(4.15V)就感到疼痛。
@@ -230,7 +177,7 @@ def rollout_surrogate(
         # 6) violation 与终止条件（尽量贴近真实环境口径）
         soc_done = float(next_state[IDX_SOC]) >= 0.995
 
-        terminated = soc_done or violation or (k + 1 >= horizon)
+        terminated = soc_done or viol_hard or (k + 1 >= horizon)
         
         if violation:
             reason = "violation"
@@ -241,6 +188,9 @@ def rollout_surrogate(
         else:
             reason = "running"
 
+        # 加入soc变化量
+        delta_soc = next_state[IDX_SOC] - curr_state[IDX_SOC]
+        v_soft = next_state[IDX_VMAX] > (v_max - 0.05)
         infos.append({
             "t": float((k + 1) * dt),
             "SOC_pack": float(next_state[IDX_SOC]),
@@ -249,20 +199,19 @@ def rollout_surrogate(
             "dV": float(next_state[IDX_DV]),
             "T_cell_max": float(next_state[IDX_TMAX]),
             "T_cell_min": float(next_state[IDX_TMIN]),
-            "I": float(0.0),            # 当前动作占位符，将在下一轮 k+1 的开头被填入
-            "I_prev": float(next_state[IDX_IPREV]),       # 上一状态的历史电流（口径统一）
+            "I": a_val,            # 当前动作占位符，将在下一轮 k+1 的开头被填入
+            "I_prev": float(curr_state[IDX_IPREV]),       # 上一状态的历史电流（口径统一）
             "reward": step_reward,
             "violation": violation,
+            "viol_hard": bool(viol_hard),
+            "is_risky": bool(is_risky),
+            "v_risk": float(v_risk),
             "terminated_reason": reason,
-            "v_risk": v_risk,      # 可选：方便你看3σ风险
+            "delta_soc": delta_soc,
+            "v_soft": v_soft,
+            "i_abs": float(abs(a_val)),    
         })
-        # if k < 3:
-        #     print(
-        #         f"k={k}",
-        #         f"a={a_val:.3f}",
-        #         f"next_Iprev(state)={next_state[IDX_IPREV]:.3f}",
-        #     )
-
+        
         curr_state = next_state
         if terminated:
             break

@@ -30,5 +30,5 @@ from pathlib import Path
 #     print(f"I={I:+.2f}A -> Vcell_max={info['V_cell_max']:.4f}, Vcell_min={info['V_cell_min']:.4f}, V_pack={info.get('V_pack')}")
 import liionpack as lp  # type: ignore  # noqa: F401
 import pybamm
-sim = lp.thermal_simulation(pybamm.ParameterValues("Chen2020"))
-print(list(sim.model.variables.keys())[:50])
+sim = pybamm.ParameterValues("Chen2020")
+print(sim)

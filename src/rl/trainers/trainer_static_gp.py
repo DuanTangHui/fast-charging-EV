@@ -4,8 +4,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Tuple
 import csv
-
+import torch
 import numpy as np
+import pybamm
+from scipy.interpolate import interp1d
+
 from torch import clip
 
 from ...envs.base_env import BasePackEnv
@@ -21,7 +24,7 @@ from ...envs.observables import curve_from_infos
 from ...utils.plotting import plot_episode
 import matplotlib.pyplot as plt
 
-def validate_surrogate_rollout(env, agent, surrogate, dataset, steps=20, hold_steps=5):
+def validate_surrogate_rollout(env, agent, surrogate, dataset, steps=20, hold_steps=1):
     """
     对比 真实环境 vs 代理模型 的多步演化
     """
@@ -159,10 +162,45 @@ class Cycle0Config:
     noise_sigma_start: float = 0.20
     noise_sigma_end: float = 0.05
 
-    hold_steps: int = 5               # dt=10s，hold 5步=50s，更像阶梯恒流
+    hold_steps: int = 1              # dt=10s，hold 5步=50s，更像阶梯恒流
     v_soft_max: float = 4.17   # 或 env.v_max - 0.03
-    t_soft_max: float = 318.5  # 或 env.t_max - 1.5
+    t_soft_max: float = 309.5  # 或 env.t_max - 1.5
 
+def get_chen2020_ocv_func():
+    # 1. 加载参数
+    param = pybamm.ParameterValues("Chen2020")
+
+    # 2. 从你提供的列表中锁定的准确键名
+    U_p = param["Positive electrode OCP [V]"]
+    U_n = param["Negative electrode OCP [V]"]
+
+    # 获取锂离子计量比限制 (用于定义 SOC 0% 到 100%)
+    # 如果下述四个键名报错，通常是因为 PyBaMM 版本中对极组容量限制的定义不同
+    # 你可以先尝试以下标准 Chen2020 键名：
+    try:
+        sto_n_0 = param["Lower stoichiometric limit in negative electrode"]
+        sto_n_1 = param["Upper stoichiometric limit in negative electrode"]
+        sto_p_0 = param["Upper stoichiometric limit in positive electrode"]
+        sto_p_1 = param["Lower stoichiometric limit in positive electrode"]
+    except KeyError:
+        # 如果报错，请直接手动指定 Chen2020 的典型计量比（LG M50 电池）
+        sto_n_0, sto_n_1 = 0.0279, 0.9014
+        sto_p_0, sto_p_1 = 0.9077, 0.2661
+
+    # 3. 构建 SOC 映射
+    soc_range = np.linspace(0, 1, 100)
+    ocv_values = []
+
+    for soc in soc_range:
+        curr_sto_n = sto_n_0 + soc * (sto_n_1 - sto_n_0)
+        curr_sto_p = sto_p_0 - soc * (sto_p_0 - sto_p_1)
+
+        # OCV = U_p(sto_p) - U_n(sto_n)
+        v = param.evaluate(U_p(pybamm.Scalar(curr_sto_p))) - \
+            param.evaluate(U_n(pybamm.Scalar(curr_sto_n)))
+        ocv_values.append(float(v))
+
+    return interp1d(soc_range, ocv_values, kind='linear', fill_value="extrapolate")
 """
 真实环境采样的关键逻辑 
 """
@@ -173,7 +211,7 @@ def collect_real_data(
     config: Cycle0Config,
 ) -> List[tuple[np.ndarray, np.ndarray, np.ndarray]]:
     # 1.准备工作
-    low = float(agent.config.action_low)   # -20
+    low = float(agent.config.action_low)   # -35
     high = float(agent.config.action_high) # 0
     transitions: List[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
 
@@ -182,20 +220,47 @@ def collect_real_data(
     t_soft = float(getattr(config, "t_soft_max", env.t_max - 1.5))   # 比硬约束低一点，比如 318.5K
 
     # 定义Guard：当接近边界时，把电流往 0A 拉
-    def guard_action(action: float, info: dict) -> float:
-        v = float(info.get("V_cell_max", -1e9))
-        t = float(info.get("T_cell_max", -1e9))
-        viol = bool(info.get("violation", False))
+    # def guard_action(action: float, info: dict) -> float:
+    #     v = float(info.get("V_cell_max", -1e9))
+    #     t = float(info.get("T_cell_max", -1e9))
+    #     viol = bool(info.get("violation", False))
 
-        # 已经违规：立即大幅减小电流（靠近0）
-        if viol:
-            return float(np.clip(action + 5.0, low, high))  # prev_action是负数，加5就是减小幅值
+    #     # 已经违规：立即大幅减小电流（靠近0）
+    #     if viol:
+    #         return float(np.clip(action + 5.0, low, high))  # prev_action是负数，加5就是减小幅值
 
-        # 接近电压或温度软阈值：渐进减小电流
-        if v >= v_soft or t >= t_soft:
-            return float(np.clip(action + 2.0, low, high))
+    #     # 接近电压或温度软阈值：渐进减小电流
+    #     if v >= v_soft or t >= t_soft:
+    #         return float(np.clip(action + 2.0, low, high))
 
-        return action
+    #     return action
+    get_ocv = get_chen2020_ocv_func()
+    def physics_limit_action(action_from_agent: float, info: dict) -> float:
+        """
+        取代旧的 guard_action，基于状态估计计算物理安全电流阈值 [cite: 231, 235]
+        """
+        soc_curr = float(info.get("SOC_cell_max", info.get("SOC_pack")))
+        v_curr = float(info.get("V_cell_max"))
+
+        # 1. 计算当前 OCV
+        u_ocv = float(get_ocv(soc_curr))
+
+        # 2. 设定物理边界：截止电压 4.2V，估算内阻 0.025 Ohm
+        v_limit = 4.22 
+        r_internal = 0.025 
+
+        # 3. 计算物理安全电流边界 I_bound (根据论文公式 6-13) [cite: 238]
+        # I_bound = (U_cut - U_ocv) / R
+        i_bound_single = max(0.0, (v_limit - u_ocv) / r_internal)
+
+        # 4. 适配 3p6s 电池组总电流 (充电为负值)
+        i_bound_pack = i_bound_single * 3.0
+
+        # 5. 动作裁剪：Agent 可以尝试物理极限内的任何电流，但禁止导致瞬时超压 [cite: 243, 272]
+        safe_action = np.clip(action_from_agent, -i_bound_pack, 0.0)
+
+        return float(safe_action)
+    
     print(f"开始 Model-Free 预训练 (Warm-up) 共 {config.real_episodes} 回合...")
 
     for ep in range(config.real_episodes):
@@ -218,7 +283,7 @@ def collect_real_data(
             a_noisy = raw_action + noise.sample()
             a_clipped = float(np.clip(a_noisy, low, high))
             #    B.安全守卫（用上一时刻 info）
-            safe_action = guard_action(a_clipped, info)
+            safe_action = physics_limit_action(a_clipped, info)
             safe_action = float(np.clip(safe_action, low, high))
 
             # 准备执行的动作
@@ -241,7 +306,11 @@ def collect_real_data(
                 t_max = float(next_info["T_cell_max"])
                 # 尝试获取 std_soc，如果没有则设为 0
                 std_soc = float(next_info.get("std_SOC", 0.0)) 
-                
+                # 获取真实的电流
+                I_exec = float(next_info.get("I_pack_true", safe_action))
+                if abs(I_exec - safe_action) > 1e-3:
+                    print(f"[WARN] current mismatch: safe={safe_action}, exec={I_exec}")
+
                 # 手动计算这一小步的奖励
                 # 注意：这里调用你外部定义的 compute_paper_reward
                 r_step, _, _, _, _, _, _ = compute_paper_reward(
@@ -304,6 +373,64 @@ def obs_from_info(info: dict) -> np.ndarray:
         dtype=np.float32,
     )
 
+def verify_dataset_coverage(transitions):
+    """
+    验证 transitions 数据集的覆盖情况
+    transitions 结构: [(start_state, action_to_exec, final_delta), ...]
+    其中 start_state[0] 是 SOC
+    """
+    # 1. 提取数据
+    # 假设 start_state 的第一个元素是 SOC，action_to_exec 是一个包含电流的 array
+    soc_values = np.array([t[0][0] for t in transitions])
+    actions = np.array([t[1][0] for t in transitions])
+
+    # 2. 基础统计
+    high_soc_mask = soc_values > 0.6
+    num_high_soc = np.sum(high_soc_mask)
+    total_samples = len(transitions)
+
+    print("-" * 30)
+    print(f"数据集总量: {total_samples}")
+    print(f"SOC > 0.6 的样本数: {num_high_soc} (占比: {num_high_soc/total_samples*100:.2f}%)")
+
+    if num_high_soc > 0:
+        high_soc_actions = actions[high_soc_mask]
+        print(f"SOC > 0.6 时的电流区间: [{np.min(high_soc_actions):.2f}A, {np.max(high_soc_actions):.2f}A]")
+        print(f"SOC > 0.6 时的平均电流: {np.mean(high_soc_actions):.2f}A")
+
+        # 统计大电流样本数（例如电流幅值 > 10A，假设充电电流为负）
+        large_current_high_soc = np.sum(high_soc_actions < -10.0)
+        print(f"SOC > 0.6 且电流 > 10A 的样本数: {large_current_high_soc}")
+    else:
+        print("警告：数据集中完全没有 SOC > 0.6 的数据！")
+
+    # 3. 可视化分析
+    plt.figure(figsize=(15, 6))
+
+    # 图 1: SOC 分布直方图
+    plt.subplot(1, 2, 1)
+    plt.hist(soc_values, bins=50, color='skyblue', edgecolor='black', alpha=0.7)
+    plt.axvline(0.6, color='red', linestyle='--', label='SOC=0.6 边界')
+    plt.title('SOC 数据分布密度')
+    plt.xlabel('SOC')
+    plt.ylabel('频数')
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+
+    # 图 2: 电流 vs SOC 散点图 (这是验证“有效性”的关键)
+    plt.subplot(1, 2, 2)
+    plt.scatter(soc_values, actions, alpha=0.4, s=15, c='darkblue')
+    plt.axvline(0.6, color='red', linestyle='--', label='SOC=0.6 边界')
+    plt.title('电流动作在不同 SOC 下的覆盖情况')
+    plt.xlabel('SOC')
+    plt.ylabel('电流 Action (A)')
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    plt.savefig('dataset_coverage_check.png')
+    plt.show()
+
 def train_cycle0(
     env: BasePackEnv,
     agent: DDPGAgent,
@@ -316,6 +443,7 @@ def train_cycle0(
     """Run Cycle0 training pipeline."""
     # 1) 真实环境采集
     transitions = collect_real_data(env, reward_cfg, agent, config)
+    verify_dataset_coverage(transitions)
     save_transitions_to_csv(transitions, "dataset.csv")
 
     actions = np.array([a[0] for _, a, _ in transitions], dtype=float)
@@ -412,7 +540,7 @@ def train_cycle0(
                 policy=policy_train,
                 horizon=env.max_steps,
                 reward_cfg=reward_cfg,
-                dt=env.dt,
+                dt=env.dt * config.hold_steps,
                 v_max=env.v_max,
                 t_max=env.t_max,
             )
@@ -459,7 +587,7 @@ def train_cycle0(
                 s_next = obs_from_info(next_info)
 
                 # 2) Action 
-                a_val = float(curr_info["I"])
+                a_val = float(next_info["I"])
                 a = np.array([a_val], dtype=np.float32)
 
                 # 3) Reward 
