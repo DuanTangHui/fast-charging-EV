@@ -24,6 +24,119 @@ from ...envs.observables import curve_from_infos
 from ...utils.plotting import plot_episode
 import matplotlib.pyplot as plt
 
+
+def validate_full_charge_comparison(env, agent, surrogate, hold_steps=1, align_interval=50):
+    """
+    完全修复版：包含电流(I)的完整记录和绘图
+    """
+    print(f"开始闭环验证（包含 {align_interval} 步对齐参考）...")
+
+    # --- 1. 真实环境闭环运行 ---
+    # 初始化包含 'I'
+    real_traj = {'SOC': [], 'V': [], 'T': [], 'I': [], 'full_states': []}
+    state_real, info = env.reset(seed=123)
+    done_real = False
+    
+    print("正在记录真实环境轨迹...")
+    while not done_real:
+        raw_action = float(agent.act(state_real)[0])
+        action = np.array([raw_action], dtype=np.float32)
+        
+        # 记录
+        real_traj['SOC'].append(state_real[0])
+        real_traj['V'].append(state_real[2])
+        real_traj['T'].append(state_real[4])
+        real_traj['I'].append(raw_action) # 记录真实电流
+        real_traj['full_states'].append(state_real.copy())
+
+        for _ in range(hold_steps):
+            state_real, reward, done_real, truncated, info = env.step(action)
+            if done_real or truncated: break
+        if done_real or truncated: break
+
+    # --- 2. 纯代理模型闭环运行 (修复：增加电流记录) ---
+    pred_traj = {'SOC': [], 'V': [], 'T': [], 'I': []} # <--- 关键修复：初始化 'I'
+    state_init, _ = env.reset(seed=123)
+    curr_pred_state = state_init.copy()
+    
+    print("正在记录纯代理模型轨迹...")
+    # 使用真实轨迹长度作为参考
+    for _ in range(len(real_traj['SOC'])):
+        # 1. 决策
+        raw_action_pred = float(agent.act(curr_pred_state)[0])
+        
+        # 2. 记录 (现在包含 I 了)
+        pred_traj['SOC'].append(curr_pred_state[0])
+        pred_traj['V'].append(curr_pred_state[2])
+        pred_traj['T'].append(curr_pred_state[4])
+        pred_traj['I'].append(raw_action_pred) # <--- 关键修复：记录预测电流
+
+        # 3. 演化
+        pred_delta, _ = surrogate.predict(curr_pred_state, np.array([raw_action_pred]))
+        curr_pred_state[:6] += pred_delta
+        curr_pred_state[6] = raw_action_pred 
+        
+        # 简单的物理边界保护，防止画图报错
+        if curr_pred_state[0] >= 1.05 or curr_pred_state[2] >= 4.5: 
+            break
+
+    # --- 3. 强制对齐演化 (修复：增加电流记录) ---
+    aligned_traj = {'SOC': [], 'V': [], 'T': [], 'I': []} # <--- 关键修复
+    curr_align_state = state_init.copy()
+    
+    print(f"正在记录每 {align_interval} 步对齐一次的轨迹...")
+    for i in range(len(real_traj['SOC'])):
+        # 1. 决策
+        raw_act_align = float(agent.act(curr_align_state)[0])
+
+        # 2. 记录
+        aligned_traj['SOC'].append(curr_align_state[0])
+        aligned_traj['V'].append(curr_align_state[2])
+        aligned_traj['T'].append(curr_align_state[4])
+        aligned_traj['I'].append(raw_act_align) # <--- 关键修复
+
+        # 3. 演化
+        delta, _ = surrogate.predict(curr_align_state, np.array([raw_act_align]))
+        curr_align_state[:6] += delta
+        curr_align_state[6] = raw_act_align
+
+        # 4. 强制对齐
+        if (i + 1) % align_interval == 0 and (i + 1) < len(real_traj['full_states']):
+            curr_align_state = real_traj['full_states'][i+1].copy()
+
+    # --- 4. 结果可视化 ---
+    fig, axes = plt.subplots(4, 1, figsize=(10, 15), sharex=True)
+    time_step = hold_steps * 10.0
+
+    keys = ['SOC', 'V', 'T', 'I']
+    ylabels = ['SOC', 'Voltage (V)', 'Temperature (K)', 'Current (A)']
+    
+    for i in range(4):
+        ax = axes[i]
+        key = keys[i]
+        
+        # 1. 真实 (黑实线)
+        t_real = np.arange(len(real_traj[key])) * time_step
+        ax.plot(t_real, real_traj[key], 'k-', label='Real Simulator', linewidth=2.0)
+        
+        # 2. 纯代理 (红虚线)
+        t_pred = np.arange(len(pred_traj[key])) * time_step
+        ax.plot(t_pred, pred_traj[key], 'r--', label='Pure Surrogate (Drift)', alpha=0.7)
+        
+        # 3. 对齐参考 (绿点线)
+        t_align = np.arange(len(aligned_traj[key])) * time_step
+        ax.plot(t_align, aligned_traj[key], 'g:', label=f'Aligned (Every {align_interval} steps)', linewidth=1.5)
+            
+        ax.set_ylabel(ylabels[i])
+        ax.grid(True, linestyle=':', alpha=0.6)
+        
+        if i == 0: 
+            ax.legend(loc='upper left')
+
+    axes[-1].set_xlabel('Time (seconds)')
+    plt.tight_layout()
+    plt.show()
+
 def validate_surrogate_rollout(env, agent, surrogate, dataset, steps=20, hold_steps=1):
     """
     对比 真实环境 vs 代理模型 的多步演化
@@ -255,6 +368,7 @@ def collect_real_data(
 
         # 4. 适配 3p6s 电池组总电流 (充电为负值)
         i_bound_pack = i_bound_single * 3.0
+        # print(f"[DEBUG] SOC={soc_curr:.4f}, OCV={u_ocv:.3f}V, I_bound_single={i_bound_single:.2f}A, I_bound_pack={i_bound_pack:.2f}A")
 
         # 5. 动作裁剪：Agent 可以尝试物理极限内的任何电流，但禁止导致瞬时超压 [cite: 243, 272]
         safe_action = np.clip(action_from_agent, -i_bound_pack, 0.0)
@@ -319,7 +433,7 @@ def collect_real_data(
                     v_max_next=v_max,
                     t_max_next=t_max,
                     std_soc_next=std_soc,
-                    action_current=safe_action, # 传入实际执行的电流
+                    action_current=I_exec, # 传入实际执行的电流
                     v_limit=env.v_max,
                     t_limit=env.t_max,
                     config=reward_cfg 
@@ -472,7 +586,8 @@ def train_cycle0(
     
     # 3) 测试 surrogate 训练效果
     validate_surrogate_rollout(env, agent, surrogate, dataset)
-    
+    # 3) N-step 误差评估（用 agent 跑真实轨迹，然后 surrogate 复现）
+    validate_full_charge_comparison(env, agent, surrogate)
     # 4) 用静态代理训练 RL 策略
     low = float(agent.config.action_low)
     high = float(agent.config.action_high)

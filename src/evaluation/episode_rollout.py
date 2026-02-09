@@ -128,6 +128,9 @@ def rollout_surrogate(
        
         # 3. 状态更新 只更新前6维；Iprev=action）
         next_state = curr_state.copy()
+        # 强制 SOC (索引0) 的增量非负
+        # 这样即使代理模型预测了负值，物理层也会将其修正为 0
+        delta_mean[0] = max(0.0, delta_mean[0])
         next_state[:6] = curr_state[:6] + delta_mean
         next_state[IDX_IPREV] = a_val
 
@@ -175,7 +178,7 @@ def rollout_surrogate(
         total_reward += step_reward
 
         # 6) violation 与终止条件（尽量贴近真实环境口径）
-        soc_done = float(next_state[IDX_SOC]) >= 0.995
+        soc_done = float(next_state[IDX_SOC]) >= 0.80
 
         terminated = soc_done or viol_hard or (k + 1 >= horizon)
         
