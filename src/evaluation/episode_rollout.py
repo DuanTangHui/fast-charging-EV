@@ -202,9 +202,8 @@ def rollout_surrogate(
             "dV": float(next_state[IDX_DV]),
             "T_cell_max": float(next_state[IDX_TMAX]),
             "T_cell_min": float(next_state[IDX_TMIN]),
-            "I": a_val,            # 当前动作占位符，将在下一轮 k+1 的开头被填入
-            "I_prev": float(curr_state[IDX_IPREV]),       # 上一状态的历史电流（口径统一）
-            "reward": step_reward,
+            "I": a_val,            
+            "I_prev": float(curr_state[IDX_IPREV]),     
             "violation": violation,
             "viol_hard": bool(viol_hard),
             "is_risky": bool(is_risky),

@@ -719,9 +719,6 @@ def train_cycle0(
                 elif is_last_step_in_list:
                     done = True # 时间到或SOC满导致结束
 
-                # 存入 Buffer
-                # if epoch == 0 and rollout_idx == 0 and t < 15:
-                #     print("[CHK] t", t, "a", a_val, "s_Iprev", s[-1], "snext_Iprev", s_next[-1], "r", r, "done", done)
 
                 agent.observe(s, a, r, s_next, done)
 

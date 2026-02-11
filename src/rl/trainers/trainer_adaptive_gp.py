@@ -1,4 +1,4 @@
-"""Trainer implementing Algorithm 2 with adaptive differential surrogate."""
+"""Trainer implementing Algorithm 2 with adaptive differential surrogate (project-consistent)."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -6,15 +6,10 @@ from typing import Dict, List
 
 import numpy as np
 
-from ...calibration.fast_calibrator import fast_calibrate
-from ...envs.aging_scenarios import compute_aging_params
 from ...envs.base_env import BasePackEnv
 from ...evaluation.episode_rollout import rollout_env, rollout_surrogate
 from ...evaluation.reports import summarize_episode
 from ...rewards.paper_reward import PaperRewardConfig
-from ...soh_prior.feature_extraction import extract_features
-from ...soh_prior.soh2param_mapper import SOHToParamMapper
-from ...soh_prior.stapinn_predictor import DummyPredictor
 from ...surrogate.dataset import build_dataset
 from ...surrogate.gp_combined import CombinedSurrogate
 from ...surrogate.gp_differential import DifferentialSurrogate
@@ -22,143 +17,232 @@ from ...surrogate.gp_static import StaticSurrogate
 from ...utils.logging import log_metrics
 from ...envs.observables import curve_from_infos
 from ...utils.plotting import plot_episode
+from ..actor_critic_ddpg import DDPGAgent  # 和静态 trainer 保持一致
+
+
+def obs_from_info(info: dict) -> np.ndarray:
+    """
+    与 trainer_static_gp.py 保持一致：
+    state = [SOC, stdSOC, Vmax, dV, Tmax, Tmin, I_prev]
+    注意：surrogate rollout 的 info[t] 中 I_prev 语义是“上一步动作”。
+    """
+    return np.array(
+        [
+            info["SOC_pack"],
+            info.get("std_SOC", 0.0),
+            info["V_cell_max"],
+            info["dV"],
+            info["T_cell_max"],
+            info["T_cell_min"],
+            info.get("I_prev", info.get("I", 0.0)),
+        ],
+        dtype=np.float32,
+    )
 
 
 @dataclass
 class AdaptiveConfig:
-    """Configuration for adaptive training cycles."""
+    """Configuration for adaptive training cycles (aligned with Cycle0Config style)."""
 
     cycles: int
     real_episodes_per_cycle: int
     surrogate_epochs: int
     policy_epochs: int
 
+    # ====== NEW: keep same structure as cycle0 ======
+    policy_rollouts_per_epoch: int = 3
+    updates_per_epoch: int = 50
+    plot_interval: int = 1
+
+    # exploration noise on surrogate rollouts (absolute A)
+    noise_sigma_start: float = 2.0
+    noise_sigma_end: float = 0.1
+
 
 def train_adaptive_cycles(
     env: BasePackEnv,
+    agent: DDPGAgent,                 # ✅ 新增：用 cycle0 的 agent 来 act/update
     static_surrogate: StaticSurrogate,
     diff_surrogate: DifferentialSurrogate,
     combined: CombinedSurrogate,
     reward_cfg: PaperRewardConfig,
     config: AdaptiveConfig,
     run_dir: str,
-    soh_enabled: bool,
-    lambda_prior: float,
-    theta_dim: int,
-    dummy_soh: float,
+    soh_enabled: bool = False,        # 先忽略 SOH，默认关
+    lambda_prior: float = 0.0,
+    theta_dim: int = 0,
+    dummy_soh: float = 0.0,
 ) -> List[Dict[str, float]]:
-    """Run adaptive cycles with differential updates."""
-
-    predictor = DummyPredictor(fixed_soh=dummy_soh)
-    mapper = SOHToParamMapper(theta_dim=theta_dim)
+    """
+    Algorithm-2 style loop:
+      cycle:
+        1) real rollouts (policy = agent) -> transitions
+        2) fit differential on residual: delta_hat = delta_real - delta_static
+        3) surrogate rollouts (policy = agent + noise) -> agent.observe + agent.update
+    """
     all_metrics: List[Dict[str, float]] = []
 
+    low = float(agent.config.action_low)
+    high = float(agent.config.action_high)
+
     for cycle in range(1, config.cycles + 1):
-        segments = []
+        # ------------------------------------------------------------
+        # (A) Collect REAL transitions (use agent policy, not random)
+        # ------------------------------------------------------------
         transitions: List[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
-        for _ in range(config.real_episodes_per_cycle):
-            def guarded_random(state: np.ndarray) -> np.ndarray:
-                # 默认随机
-                a = np.random.uniform(-30.0, 0.0, size=(1,)).astype(np.float32)
 
-                # 从 env 里拿上一步 info
-                env = guarded_random.env_ref
-                last = getattr(env, "_last_info", None)
-               
-                if last is None:
-                    return a
+        for ep in range(config.real_episodes_per_cycle):
+            # 真实环境探索噪声：建议比 cycle0 小一些（你也可以后续做衰减）
+            sigma_real = 0.5
 
-                v = float(last.get("V_cell_max", 0.0))
+            def policy_real(state: np.ndarray) -> np.ndarray:
+                a_det = float(agent.act(state)[0])
+                a = float(np.clip(a_det + np.random.normal(0.0, sigma_real), low, high))
+                return np.array([a], dtype=np.float32)
 
-                # 电压守门（给 dt=30s 留缓冲）
-                if v > 4.195:
-                    return np.array([0.0], dtype=np.float32)
-                if v > 4.18:
-                    return np.array([-2.0], dtype=np.float32)
+            _, infos = rollout_env(env, policy_real, reward_cfg)
 
-                return a
-            guarded_random.env_ref = env
-            total_reward, infos = rollout_env(env, guarded_random, reward_cfg)
-            segments.append(
-                {
-                    "soc": np.array([info["SOC_pack"] for info in infos]),
-                    "voltage": np.array([info["V_cell_max"] for info in infos]),
-                    "temperature": np.array([info["T_cell_max"] for info in infos]),
-                    "time": np.array([info["t"] for info in infos]),
-                }
-            )
+            # 用你统一后的口径构造 (s, a_t, delta6)
+            # s 的第7维用 info[t]["I"]（在你的 env 里它对应“上一动作/当前状态携带的历史电流”）
             for i in range(len(infos) - 1):
+                curr = infos[i]
+                nxt = infos[i + 1]
+
                 s = np.array(
                     [
-                        infos[i]["SOC_pack"],
-                        infos[i].get("std_SOC", 0.0),
-                        infos[i]["V_cell_max"],
-                        infos[i]["dV"],
-                        infos[i]["T_cell_max"],
-                        infos[i]["T_cell_min"],
-                        infos[i]["I"],
+                        curr["SOC_pack"],
+                        curr.get("std_SOC", 0.0),
+                        curr["V_cell_max"],
+                        curr["dV"],
+                        curr["T_cell_max"],
+                        curr["T_cell_min"],
+                        curr["I"],
                     ],
                     dtype=np.float32,
                 )
                 s_next = np.array(
                     [
-                        infos[i + 1]["SOC_pack"],
-                        infos[i + 1].get("std_SOC", 0.0),
-                        infos[i + 1]["V_cell_max"],
-                        infos[i + 1]["dV"],
-                        infos[i + 1]["T_cell_max"],
-                        infos[i + 1]["T_cell_min"],
-                        infos[i + 1]["I"],
+                        nxt["SOC_pack"],
+                        nxt.get("std_SOC", 0.0),
+                        nxt["V_cell_max"],
+                        nxt["dV"],
+                        nxt["T_cell_max"],
+                        nxt["T_cell_min"],
+                        nxt["I"],
                     ],
                     dtype=np.float32,
                 )
-                delta = s_next[:11] - s[:11]
-                transitions.append((s, np.array([infos[i]["I"]], dtype=np.float32), delta))
-        
-      
-        states = np.stack([t[0] for t in transitions])
-        deltas = np.stack([t[2] for t in transitions])
 
-        def report(name, x):
-            print(name, "shape", x.shape,
-                "min", np.nanmin(x), "max", np.nanmax(x),
-                "nan", np.isnan(x).any(), "inf", np.isinf(x).any())
+                delta6 = s_next[:6] - s[:6]
+                a = np.array([float(nxt["I"])], dtype=np.float32)  # ✅ 当前动作 a_t
+                transitions.append((s, a, delta6))
 
-        report("states", states)
-        report("deltas", deltas)
+        # ------------------------------------------------------------
+        # (B) Fit DIFFERENTIAL surrogate on residual
+        #     delta_hat = delta_real - delta_static
+        # ------------------------------------------------------------
+        residual_transitions: List[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
+        for (s, a, delta_real6) in transitions:
+            delta_static6, _ = static_surrogate.predict(s, a)  # static 输出 6 维
+            delta_hat6 = delta_real6 - delta_static6
+            residual_transitions.append((s, a, delta_hat6))
 
-        dataset = build_dataset(transitions)
-        diff_surrogate.fit(dataset, epochs=config.surrogate_epochs)
+        dataset_hat = build_dataset(residual_transitions)
+        diff_surrogate.fit(dataset_hat, epochs=config.surrogate_epochs)
 
-        if soh_enabled:
-            features = extract_features(segments)
-            soh_pred = predictor.predict(features)
-            theta_prior = mapper.map(soh_pred)
-            simulator = lambda theta: theta  # placeholder for parameterized simulation
-            calib = fast_calibrate(theta_prior, simulator, theta_prior, lambda_prior, steps=10, lr=0.05)
-            aging = compute_aging_params(cycle, theta_hat=calib.theta_hat.tolist())
-            env.set_aging(aging)
-        
+        # ------------------------------------------------------------
+        # (C) Policy training on COMBINED surrogate (same as cycle0 style)
+        # ------------------------------------------------------------
+        actor_losses: List[float] = []
+        critic_losses: List[float] = []
+
         for epoch in range(config.policy_epochs):
-            def policy(state: np.ndarray) -> np.ndarray:
-                return env.action_space.sample()
-
-            state, _ = env.reset()
-            total_reward, infos = rollout_surrogate(
-                state=state,
-                surrogate=combined.predict,
-                policy=policy,
-                horizon=env.max_steps,
-                reward_cfg=reward_cfg,
-                dt=env.dt,
-                v_max=env.v_max,
-                t_max=env.t_max,
+            # 噪声衰减（和静态 trainer 一样的思想）:contentReference[oaicite:3]{index=3}
+            progress = epoch / max(1, config.policy_epochs - 1)
+            current_sigma = max(
+                config.noise_sigma_end,
+                config.noise_sigma_start
+                - (config.noise_sigma_start - config.noise_sigma_end) * progress,
             )
+
+            def policy_train(s: np.ndarray) -> np.ndarray:
+                a_det = float(agent.act(s)[0])
+                noise = np.random.normal(0.0, current_sigma)
+
+                # 防止 0A 截断导致动作分布畸变（静态 trainer 的技巧）:contentReference[oaicite:4]{index=4}
+                if a_det + noise > high:
+                    noise = -abs(noise)
+                elif a_det + noise < low:
+                    noise = abs(noise)
+
+                a = float(np.clip(a_det + noise, low, high))
+                return np.array([a], dtype=np.float32)
+
+            # 每个 epoch 做多条 surrogate rollout（同构 cycle0 的 policy_rollouts_per_epoch）:contentReference[oaicite:5]{index=5}
+            for rollout_idx in range(config.policy_rollouts_per_epoch):
+                if rollout_idx == 0 or dataset_hat.states.shape[0] == 0:
+                    state0, _ = env.reset()
+                else:
+                    state0 = dataset_hat.states[np.random.randint(0, dataset_hat.states.shape[0])].copy()
+
+                total_reward, infos = rollout_surrogate(
+                    state=state0,
+                    surrogate=combined.predict,
+                    policy=policy_train,
+                    horizon=env.max_steps,
+                    reward_cfg=reward_cfg,
+                    dt=env.dt,
+                    v_max=env.v_max,
+                    t_max=env.t_max,
+                )
+
+                # 用 surrogate infos 喂给 agent（完全复用 cycle0 的口径）:contentReference[oaicite:6]{index=6}
+                for t in range(len(infos) - 1):
+                    curr_info = infos[t]
+                    next_info = infos[t + 1]
+
+                    s = obs_from_info(curr_info)
+                    s_next = obs_from_info(next_info)
+
+                    a_val = float(next_info["I"])
+                    a = np.array([a_val], dtype=np.float32)
+                    r = float(next_info["reward"])
+
+                    is_violation = bool(next_info.get("violation", False))
+                    is_last = (t == len(infos) - 2)
+                    done = is_violation or is_last
+
+                    agent.observe(s, a, r, s_next, done)
+
+                # 多次更新（同构 cycle0 的 updates_per_epoch）
+                for _ in range(config.updates_per_epoch):
+                    if len(agent.buffer) > agent.config.batch_size:
+                        a_loss, c_loss = agent.update()
+                        # 兼容你 update() 返回 None 的实现
+                        if a_loss is not None:
+                            actor_losses.append(float(a_loss))
+                        if c_loss is not None:
+                            critic_losses.append(float(c_loss))
+
+            # ---- logging / plotting（同构 cycle0）----
             metrics = summarize_episode(infos)
-            metrics.update({"epoch": epoch, "cycle": cycle, "phase": "adaptive", "reward": total_reward})
+            metrics.update(
+                {
+                    "epoch": epoch,
+                    "cycle": cycle,
+                    "phase": "adaptive",
+                    "reward": float(total_reward),
+                    "sigma": float(current_sigma),
+                    "a_loss": float(np.mean(actor_losses)) if actor_losses else 0.0,
+                    "c_loss": float(np.mean(critic_losses)) if critic_losses else 0.0,
+                }
+            )
             log_metrics(f"{run_dir}/metrics.jsonl", metrics)
-            curve = curve_from_infos(infos)
-            plot_episode(curve, f"{run_dir}/cycle_{cycle}_epoch_{epoch}.png")
+
+            if config.plot_interval > 0 and epoch % config.plot_interval == 0:
+                curve = curve_from_infos(infos)
+                plot_episode(curve, f"{run_dir}/cycle_{cycle}_epoch_{epoch}.png")
+
             all_metrics.append(metrics)
 
     return all_metrics

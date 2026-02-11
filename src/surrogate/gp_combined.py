@@ -25,16 +25,25 @@ class CombinedSurrogate:
             return delta_static, std_static
         # 3. 获取差分模型的预测（即：修正量）
         delta_diff, std_diff = self.differential.predict(state, action)
-        return delta_static + delta_diff, std_static + std_diff
+        # 统一口径：所有 surrogate 都输出 6 维 delta（不含 I_prev）
+        delta = delta_static + delta_diff
+        std = np.sqrt(std_static**2 + std_diff**2)
+        return delta, std
     # 虚拟推演
     def rollout(self, state: np.ndarray, policy: Callable[[np.ndarray], np.ndarray], horizon: int) -> np.ndarray:
-        """Rollout the combined surrogate."""
-
-        traj = [state]
-        current = state
+        """Rollout the combined surrogate with project-consistent state update.
+        State is 7D; delta is 6D (no I_prev). next_state[:6]+=delta; next_state[-1]=action.
+        """
+        traj = [state.copy()]
+        current = state.copy()
         for _ in range(horizon):
             action = policy(current)
-            delta, _ = self.predict(current, action)
-            current = current + delta
-            traj.append(current)
+            delta6, _ = self.predict(current, action)
+
+            next_state = current.copy()
+            next_state[:6] = current[:6] + delta6
+            next_state[-1] = float(np.asarray(action).reshape(-1)[0])  # I_prev = action
+            current = next_state
+            traj.append(current.copy())
         return np.stack(traj)
+

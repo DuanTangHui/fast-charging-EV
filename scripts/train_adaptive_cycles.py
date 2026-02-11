@@ -17,6 +17,7 @@ import torch
 
 from src.envs.liionpack_spme_pack_env import build_pack_env
 from src.rewards.paper_reward import PaperRewardConfig
+from src.rl.actor_critic_ddpg import DDPGAgent, DDPGConfig
 from src.rl.trainers.trainer_adaptive_gp import AdaptiveConfig, train_adaptive_cycles
 from src.surrogate.dataset import build_dataset
 from src.surrogate.gp_combined import CombinedSurrogate
@@ -37,27 +38,23 @@ def main() -> None:
 
     env = build_pack_env(config["env"])
     reward_cfg = PaperRewardConfig(**config["reward"])
+    rl_cfg = DDPGConfig(
+        gamma=config["rl"]["gamma"],
+        actor_lr=config["rl"]["actor_lr"],
+        critic_lr=config["rl"]["critic_lr"],
+        tau=config["rl"]["tau"],
+        batch_size=config["rl"]["batch_size"],
+        buffer_size=config["rl"]["buffer_size"],
+        action_low=config["rl"]["action_low"],
+        action_high=config["rl"]["action_high"],
+    )
 
     static_ckpt = Path(config["logging"]["runs_dir"]) / "cycle0" / "static_surrogate.pt"
     if static_ckpt.exists():
-        # Attempt a safe weights-only load. Some torch versions require
-        # allowlisting custom classes for weights-only mode.
-        try:
-            add_safe = getattr(torch.serialization, "add_safe_globals", None)
-            if add_safe is not None:
-                add_safe([StaticSurrogate])
-        except Exception:
-            pass
-        try:
-            static_surrogate = torch.load(static_ckpt, weights_only=True)
-        except Exception:
-            # Fall back to the classic load if weights-only fails (trusted file).
-            # This may execute arbitrary code during unpickling - only do this
-            # if you trust the checkpoint source.
-            static_surrogate = torch.load(static_ckpt)
+        static_surrogate = torch.load(static_ckpt)
     else:
         static_surrogate = StaticSurrogate(
-            input_dim=env.observation_space.shape[0],
+            input_dim=env.observation_space.shape[0] + 1,
             output_dim=env.observation_space.shape[0] - 1,
             hidden_sizes=config["surrogate"]["hidden_sizes"],
             ensemble_size=config["surrogate"]["ensemble_size"],
@@ -70,13 +67,14 @@ def main() -> None:
             while not done:
                 action = env.action_space.sample()
                 next_state, _, terminated, truncated, _ = env.step(action)
-                transitions.append((state, action, next_state[:11] - state[:11]))
+                transitions.append((state, action, next_state[:6] - state[:6]))
                 state = next_state
                 done = terminated or truncated
         dataset = build_dataset(transitions)
         static_surrogate.fit(dataset, epochs=5)
+    
     diff_surrogate = DifferentialSurrogate(
-        input_dim=env.observation_space.shape[0],
+        input_dim=env.observation_space.shape[0] + 1,
         output_dim=env.observation_space.shape[0] - 1,
         hidden_sizes=config["surrogate"]["hidden_sizes"],
         ensemble_size=config["surrogate"]["ensemble_size"],
@@ -87,8 +85,17 @@ def main() -> None:
     run_dir = ensure_dir(Path(config["logging"]["runs_dir"]) / "adaptive")
     adaptive_cfg = AdaptiveConfig(**config["trainer"]["adaptive"])
 
+    cycle0_dir = Path(config["logging"]["runs_dir"]) / "cycle0"
+    ckpt_path = cycle0_dir / "agent_ckpt.pt"
+    if not ckpt_path.exists():
+        raise FileNotFoundError(f"Missing checkpoint: {ckpt_path}")
+    
+    agent = DDPGAgent(state_dim=env.observation_space.shape[0], action_dim=1, config=rl_cfg)
+    agent.load(str(ckpt_path))
+
     train_adaptive_cycles(
         env,
+        agent,
         static_surrogate,
         diff_surrogate,
         combined,

@@ -112,4 +112,4 @@ def reward_from_info(prev: Dict, next_info: Dict, config: PaperRewardConfig, v_l
         config=config,
     )
     
-    return r,r_soc ,r_time ,r_v , r_t , r_const , r_action
+    return r
