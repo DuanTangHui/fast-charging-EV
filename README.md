@@ -67,3 +67,6 @@ reward weights, and environment settings.
 
 我用 Python 写了一个“论文级、可运行”的完整项目框架代码：参考论文《Adaptive Model-Based Reinforcement Learning for Fast-Charging Optimization of Lithium-Ion Batteries》的设计（奖励函数、采样周期、折扣因子、模型学习方式、训练流程 Algorithm 1/2），但研究对象升级为“3P6S 电池组（liionpack + PyBaMM SPME）+ 老化 + 单体差异”，并融合一个外部 SOH 模型（STAPINN）作为先验提供者以加速差分模型/代理模型的在线校准，注意强化学习的方法设计成可替换的。 
 现在我已经完成了第一步的静态代理模型的训练和在静态代理模型上训练agent，现在我需要根据修改好的配置来修改动态加入的差分模型的相关代码，你帮我一步步分析代码。
+
+dataset1只改了终止条件为0.8
+dataset2修改了soc初始值0.2-0.3和终止条件0.8 电流大多在最大值导致soc到0.5-0.6就终止了，不好。

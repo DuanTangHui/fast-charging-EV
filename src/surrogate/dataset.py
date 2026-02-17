@@ -31,6 +31,16 @@ class TransitionDataset:
 
         s_norm = (states - self.s_mean.astype(np.float32)) / s_std
         a_norm = (actions - self.a_mean.astype(np.float32)) / a_std
+
+        # # 2. 使用 epsilon 防止除零，但不对 std 做过度硬截断
+        # # 针对电池数据，epsilon 设为 1e-8 足够安全
+        # s_norm = (states - self.s_mean) / (self.s_std + 1e-8)
+        # a_norm = (actions - self.a_mean) / (self.a_std + 1e-8)
+
+        # # 3. 数值裁剪 (Value Clipping)
+        # # 核心：防止因为测试时的离群状态导致输入 MLP 的值过大（如电压突跳）
+        # s_norm = np.clip(s_norm, -10, 10)
+        # a_norm = np.clip(a_norm, -10, 10)
         return s_norm, a_norm
 
     def denormalize_delta(self, delta_norm: np.ndarray) -> np.ndarray:

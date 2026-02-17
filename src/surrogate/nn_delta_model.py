@@ -84,14 +84,11 @@ class EnsembleDeltaModel:
         num_samples = x.shape[0]
 
         for model_idx, (model, opt) in enumerate(zip(self.models, self.optimizers)):
-            indices = np.random.permutation(num_samples)
             for epoch in range(epochs):
+                indices = np.random.permutation(num_samples)
                 epoch_losses = []
-                # Mini-batch 训练
                 for start_idx in range(0, num_samples, batch_size):
                     batch_indices = indices[start_idx : start_idx + batch_size]
-                    
-                    # 取出一个 batch
                     batch_x = x_tensor[batch_indices]
                     batch_y = y_tensor[batch_indices]
                     

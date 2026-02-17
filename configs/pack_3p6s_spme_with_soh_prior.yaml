@@ -52,16 +52,16 @@ trainer:
   cycle0:
     real_episodes: 50
     surrogate_epochs: 25
-    policy_epochs: 100
+    policy_epochs: 50
   adaptive:
-    cycles: 2
+    cycles: 1
     real_episodes_per_cycle: 30
     surrogate_epochs: 20
     policy_epochs: 100
 
     # NEW (建议显式写出来)
     policy_rollouts_per_epoch: 3
-    updates_per_epoch: 50
+    updates_per_epoch: 500
     noise_sigma_start: 2.0
     noise_sigma_end: 0.1
     plot_interval: 1

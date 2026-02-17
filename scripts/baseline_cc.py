@@ -86,8 +86,8 @@ def make_taper_policy(
     high: float,
     v_limit: float,
     v_soft_margin: float = 0.05,  # 4.15 if v_limit=4.2
-    soc_soft: float = 0.90,
-    soc_full: float = 0.995,
+    soc_soft: float = 0.79,
+    soc_full: float = 0.80,
 ) -> Callable[[np.ndarray, Dict], np.ndarray]:
     """
     一个“很干净但有效”的快满降流策略（类似 CC->CV 的简化版）：

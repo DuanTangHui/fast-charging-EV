@@ -6,9 +6,10 @@ from typing import Callable, Dict, List, Tuple
 import csv
 import torch
 import numpy as np
+import pandas as pd
 import pybamm
 from scipy.interpolate import interp1d
-
+from pathlib import Path
 from torch import clip
 
 from ...envs.base_env import BasePackEnv
@@ -19,16 +20,20 @@ from ...surrogate.dataset import build_dataset
 from ...surrogate.gp_static import StaticSurrogate
 from ..actor_critic_ddpg import DDPGAgent
 from ..noise import GaussianNoise
+from ..OUnoise import OrnsteinUhlenbeckNoise
 from ...utils.logging import log_metrics
 from ...envs.observables import curve_from_infos
 from ...utils.plotting import plot_episode
 import matplotlib.pyplot as plt
 
+from ...rl.actor_critic_ddpg import DDPGConfig
 
 def validate_full_charge_comparison(env, agent, surrogate, hold_steps=1, align_interval=50):
     """
     完全修复版：包含电流(I)的完整记录和绘图
     """
+
+    
     print(f"开始闭环验证（包含 {align_interval} 步对齐参考）...")
 
     # --- 1. 真实环境闭环运行 ---
@@ -264,8 +269,7 @@ class Cycle0Config:
     real_episodes: int  # 跑真实环境，收集 (s, a, Δs)
     surrogate_epochs: int # 用这些数据训练静态代理模型的 epoch 数
     policy_epochs: int #用 surrogate 做 rollout，产生 “伪经验” 来训练 RL policy（DDPG）
-    policy_rollouts_per_epoch: int = 3  # 每个 epoch 用 surrogate rollout 的条数
-    updates_per_epoch: int = 50  # 每个 epoch 更新 policy 的次数
+    policy_rollouts_per_epoch: int = 1  # 每个 epoch 用 surrogate rollout 的条数
     plot_interval: int = 1  # 每隔多少个 epoch 保存一次轨迹图（1=每次）
     # ====== collect_real_data 探索参数 ======
     eps_random_start: float = 0.85     # 你的环境很容易撞 Vmax，随机比例建议更高
@@ -275,7 +279,7 @@ class Cycle0Config:
     noise_sigma_start: float = 0.20
     noise_sigma_end: float = 0.05
 
-    hold_steps: int = 1              # dt=10s，hold 5步=50s，更像阶梯恒流
+    hold_steps: int = 1              # dt=10s，hold 1步
     v_soft_max: float = 4.17   # 或 env.v_max - 0.03
     t_soft_max: float = 309.5  # 或 env.t_max - 1.5
 
@@ -324,29 +328,13 @@ def collect_real_data(
     config: Cycle0Config,
 ) -> List[tuple[np.ndarray, np.ndarray, np.ndarray]]:
     # 1.准备工作
-    low = float(agent.config.action_low)   # -35
+    low = float(agent.config.action_low)   # -30
     high = float(agent.config.action_high) # 0
     transitions: List[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
 
-    # 软约束参数
-    v_soft = float(getattr(config, "v_soft_max", env.v_max - 0.03))  # 比硬约束低一点，比如 4.17
-    t_soft = float(getattr(config, "t_soft_max", env.t_max - 1.5))   # 比硬约束低一点，比如 318.5K
+    # 动作平滑系数：alpha 越小，动作序列越平滑
+    alpha = 0.3
 
-    # 定义Guard：当接近边界时，把电流往 0A 拉
-    # def guard_action(action: float, info: dict) -> float:
-    #     v = float(info.get("V_cell_max", -1e9))
-    #     t = float(info.get("T_cell_max", -1e9))
-    #     viol = bool(info.get("violation", False))
-
-    #     # 已经违规：立即大幅减小电流（靠近0）
-    #     if viol:
-    #         return float(np.clip(action + 5.0, low, high))  # prev_action是负数，加5就是减小幅值
-
-    #     # 接近电压或温度软阈值：渐进减小电流
-    #     if v >= v_soft or t >= t_soft:
-    #         return float(np.clip(action + 2.0, low, high))
-
-    #     return action
     get_ocv = get_chen2020_ocv_func()
     def physics_limit_action(action_from_agent: float, info: dict) -> float:
         """
@@ -385,7 +373,7 @@ def collect_real_data(
         noise = GaussianNoise(sigma=float(sigma))
 
         # state, info = env.reset()
-        state, info = env.reset(options={"soc_low": 0.1, "soc_high": 0.9})
+        state, info = env.reset(options={"soc_low": 0.1, "soc_high": 0.75})
         done = False
 
         # 统计本回合奖励
@@ -407,7 +395,7 @@ def collect_real_data(
             start_state = state.copy()
             accumulated_reward = 0.0
 
-            # 执行 hold steps (模拟宏观步长) (Time = t -> t + N*dt) 50s
+            # 执行 hold steps (模拟宏观步长) (Time = t -> t + N*dt) 10s
             for _ in range(config.hold_steps):
                 # 记录 step 前的 SOC
                 prev_soc = current_soc
@@ -450,7 +438,7 @@ def collect_real_data(
                     done = True
                     break
             # --- 3. 训练 Agent ---
-            # 存入的是：(0s状态, 50s动作, 50s总奖励, 50s状态)
+            # 存入的是：(0s状态, 10s动作, 10s总奖励, 10s状态)
             agent.observe(start_state, action_to_exec, accumulated_reward, state, done)
             # 只有当 buffer 数据够了才 update
             if len(agent.buffer) > agent.config.batch_size:
@@ -545,6 +533,24 @@ def verify_dataset_coverage(transitions):
     plt.savefig('dataset_coverage_check.png')
     plt.show()
 
+def load_transitions_from_csv(filepath: str) -> List[Tuple[np.ndarray, np.ndarray, np.ndarray]]:
+    df = pd.read_csv(filepath)
+    
+    # 自动识别列
+    state_cols = [c for c in df.columns if c.startswith('s_')]
+    action_cols = ['action']
+    delta_cols = [c for c in df.columns if c.startswith('d_')]
+    
+    transitions = []
+    for _, row in df.iterrows():
+        state = row[state_cols].values.astype(np.float32)
+        action = row[action_cols].values.astype(np.float32)
+        delta = row[delta_cols].values.astype(np.float32)
+        transitions.append((state, action, delta))
+        
+    print(f"[OK] Loaded {len(transitions)} transitions from: {filepath}")
+    return transitions
+
 def train_cycle0(
     env: BasePackEnv,
     agent: DDPGAgent,
@@ -562,30 +568,36 @@ def train_cycle0(
 
     actions = np.array([a[0] for _, a, _ in transitions], dtype=float)
     print("Action stats: mean", actions.mean(), "std", actions.std(), "min", actions.min(), "max", actions.max())
+    # csv_path = "C:\\Users\\85721\\Desktop\\fast-charging-EV\\dataset.csv"
+    # transitions = load_transitions_from_csv(csv_path)
+   
 
+    # ckpt_path = "C:\\Users\\85721\\Desktop\\fast-charging-EV\\runs\\cycle0\\agent_ckpt.pt"
+    
+    # agent.load(str(ckpt_path))
     # 2) 静态代理模型训练
     dataset = build_dataset(transitions)
-    # t_idx = -2 
-    # v_idx = 2   # 假设第2列是 V_max
+    t_idx = -3 
+    v_idx = 2   # 假设第2列是 V_max
 
-    # print(f"--- 数据统计量诊断 ---")
-    # print(f"【温度 Delta】 均值: {dataset.d_mean[t_idx]:.8f}, 标准差: {dataset.d_std[t_idx]:.8f}")
-    # print(f"【电压 Delta】 均值: {dataset.d_mean[v_idx]:.8f}, 标准差: {dataset.d_std[v_idx]:.8f}")
-    # print(f"【温度 Delta】 最大值: {np.max(dataset.deltas[:, t_idx]):.8f}, 最小值: {np.min(dataset.deltas[:, t_idx]):.8f}")
+    print(f"--- 数据统计量诊断 ---")
+    print(f"【最大温度 Delta】 均值: {dataset.d_mean[t_idx]:.8f}, 标准差: {dataset.d_std[t_idx]:.8f}")
+    print(f"【电压 Delta】 均值: {dataset.d_mean[v_idx]:.8f}, 标准差: {dataset.d_std[v_idx]:.8f}")
+    print(f"【温度 Delta】 最大值: {np.max(dataset.deltas[:, t_idx]):.8f}, 最小值: {np.min(dataset.deltas[:, t_idx]):.8f}")
 
-    # # 关键检查点
-    # if dataset.d_std[t_idx] <= 1.1e-6:
-    #     print("❌ 致命错误：温度标准差接近 1e-6 (Clip值)。")
-    #     print("   原因：采样间隔太短，或者数据里全是静置，温度根本没变。")
-    #     print("   后果：模型认为温度永远不变，归一化失效。")
-    # else:
-    #     print("✅ 统计量看起来有波动。")
+    # 关键检查点
+    if dataset.d_std[t_idx] <= 1.1e-6:
+        print("❌ 致命错误：温度标准差接近 1e-6 (Clip值)。")
+        print("   原因：采样间隔太短，或者数据里全是静置，温度根本没变。")
+        print("   后果：模型认为温度永远不变，归一化失效。")
+    else:
+        print("✅ 统计量看起来有波动。")
 
     surrogate.fit(dataset, epochs=config.surrogate_epochs)
     print("静态代理模型训练完成。")
     
     # 3) 测试 surrogate 训练效果
-    validate_surrogate_rollout(env, agent, surrogate, dataset)
+    # validate_surrogate_rollout(env, agent, surrogate, dataset)
     # 3) N-step 误差评估（用 agent 跑真实轨迹，然后 surrogate 复现）
     validate_full_charge_comparison(env, agent, surrogate)
     # 4) 用静态代理训练 RL 策略
@@ -721,7 +733,13 @@ def train_cycle0(
 
 
                 agent.observe(s, a, r, s_next, done)
-
+                
+                if len(agent.buffer) > agent.config.batch_size:
+                # 假设 update 返回 (actor_loss, critic_loss)
+                # 如果你的 update 没有返回值，需要去修改 DDPGAgent.update
+                    loss_a, loss_c = agent.update()
+                    epoch_a_loss.append(loss_a)
+                    epoch_c_loss.append(loss_c)
                 # --- 统计 actions 分布 ---
                 total_cnt += 1
                 if abs(a_val) < 1e-8:
@@ -736,19 +754,7 @@ def train_cycle0(
             var = a_sq / max(1, total_cnt) - mean**2
             std = (var if var > 0 else 0.0) ** 0.5
             print(f"[BUF] actions: zero_ratio={zero_cnt/total_cnt:.3f} mean={mean:.3f} std={std:.3f} min={a_min:.3f} max={a_max:.3f}")
-    
 
-        # --- 【修改点 3】: 更新并记录 Loss ---
-        # 确保 Agent 在每个 epoch 结束时进行多次更新
-        for _ in range(config.updates_per_epoch):
-            # 只有当 buffer 够大时才 update
-            if len(agent.buffer) > agent.config.batch_size:
-                # 假设 update 返回 (actor_loss, critic_loss)
-                # 如果你的 update 没有返回值，需要去修改 DDPGAgent.update
-                loss_a, loss_c = agent.update()
-                epoch_a_loss.append(loss_a)
-                epoch_c_loss.append(loss_c)
-        
         # 打印平均 Loss
         if epoch_a_loss:
             avg_a = np.mean(epoch_a_loss)
