@@ -125,6 +125,7 @@ class DDPGAgent:
         # 回放与归一化
         self.buffer = ReplayBuffer(config.buffer_size)
         self.state_norm = RunningNormalizer(state_dim)
+        self.is_on_policy = False
 
     def act(self, state: np.ndarray) -> np.ndarray:
         """ 根据当前状态选择动作（只做归一化，不更新统计量）。

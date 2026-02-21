@@ -15,7 +15,7 @@ root_dir = current_dir.parent
 sys.path.append(str(root_dir))
 
 from src.envs.liionpack_spme_pack_env import build_pack_env
-from src.rl.actor_critic_ddpg import DDPGAgent, DDPGConfig
+from src.rl.agent_factory import build_agent_from_config
 from src.utils.config import load_config
 from src.utils.seeds import set_global_seed
 
@@ -106,18 +106,12 @@ def main() -> None:
 
     # 3. 初始化 Agent (结构必须与训练时一致)
     print("Initializing Agent...")
-    rl_cfg = DDPGConfig(
-        gamma=config["rl"]["gamma"],
-        actor_lr=config["rl"]["actor_lr"],
-        critic_lr=config["rl"]["critic_lr"],
-        tau=config["rl"]["tau"],
-        batch_size=config["rl"]["batch_size"],
-        buffer_size=config["rl"]["buffer_size"],
-        action_low=config["rl"]["action_low"],
-        action_high=config["rl"]["action_high"],
-    )
     # 注意：action_dim 这里硬编码为 1，与你训练脚本一致
-    agent = DDPGAgent(state_dim=env.observation_space.shape[0], action_dim=1, config=rl_cfg)
+    agent = build_agent_from_config(
+        state_dim=env.observation_space.shape[0],
+        action_dim=1,
+        rl_config=config["rl"],
+    )
 
     # 4. 加载权重
     policy_path = Path(args.policy)

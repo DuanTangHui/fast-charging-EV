@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List
+from typing import Any, Dict, List
 
 import numpy as np
 
@@ -17,7 +17,22 @@ from ...surrogate.gp_static import StaticSurrogate
 from ...utils.logging import log_metrics
 from ...envs.observables import curve_from_infos
 from ...utils.plotting import plot_episode
-from ..actor_critic_ddpg import DDPGAgent  # 和静态 trainer 保持一致
+
+
+def _is_on_policy_agent(agent: Any) -> bool:
+    return bool(getattr(agent, "is_on_policy", False))
+
+
+def _agent_buffer_len(agent: Any) -> int:
+    buffer_obj = getattr(agent, "buffer", None)
+    return len(buffer_obj) if buffer_obj is not None else 0
+
+
+def _agent_ready_to_update(agent: Any) -> bool:
+    batch_size = int(getattr(getattr(agent, "config", object()), "batch_size", 1))
+    return _agent_buffer_len(agent) >= batch_size
+
+
 
 
 def obs_from_info(info: dict) -> np.ndarray:
@@ -61,7 +76,7 @@ class AdaptiveConfig:
 
 def train_adaptive_cycles(
     env: BasePackEnv,
-    agent: DDPGAgent,                 # ✅ 新增：用 cycle0 的 agent 来 act/update
+    agent: Any,
     static_surrogate: StaticSurrogate,
     diff_surrogate: DifferentialSurrogate,
     combined: CombinedSurrogate,
@@ -97,7 +112,10 @@ def train_adaptive_cycles(
 
             def policy_real(state: np.ndarray) -> np.ndarray:
                 a_det = float(agent.act(state)[0])
-                a = float(np.clip(a_det + np.random.normal(0.0, sigma_real), low, high))
+                if _is_on_policy_agent(agent):
+                    a = float(np.clip(a_det, low, high))
+                else:
+                    a = float(np.clip(a_det + np.random.normal(0.0, sigma_real), low, high))
                 return np.array([a], dtype=np.float32)
 
             _, infos = rollout_env(env, policy_real, reward_cfg)
@@ -167,7 +185,10 @@ def train_adaptive_cycles(
 
             def policy_train(s: np.ndarray) -> np.ndarray:
                 a_det = float(agent.act(s)[0])
-                noise = np.random.normal(0.0, current_sigma)
+                if _is_on_policy_agent(agent):
+                    noise = 0.0
+                else:
+                    noise = np.random.normal(0.0, current_sigma)
 
                 # 防止 0A 截断导致动作分布畸变（静态 trainer 的技巧）:contentReference[oaicite:4]{index=4}
                 if a_det + noise > high:
@@ -215,10 +236,10 @@ def train_adaptive_cycles(
                     agent.observe(s, a, r, s_next, done)
 
                 # 多次更新（同构 cycle0 的 updates_per_epoch）
-                for _ in range(config.updates_per_epoch):
-                    if len(agent.buffer) > agent.config.batch_size:
+                update_loops = 1 if _is_on_policy_agent(agent) else config.updates_per_epoch
+                for _ in range(update_loops):
+                    if _agent_ready_to_update(agent):
                         a_loss, c_loss = agent.update()
-                        # 兼容你 update() 返回 None 的实现
                         if a_loss is not None:
                             actor_losses.append(float(a_loss))
                         if c_loss is not None:

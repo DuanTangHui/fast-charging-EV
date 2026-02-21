@@ -17,7 +17,7 @@ import torch
 
 from src.envs.liionpack_spme_pack_env import build_pack_env
 from src.rewards.paper_reward import PaperRewardConfig
-from src.rl.actor_critic_ddpg import DDPGAgent, DDPGConfig
+from src.rl.agent_factory import build_agent_from_config
 from src.rl.trainers.trainer_static_gp import Cycle0Config, train_cycle0
 from src.surrogate.gp_static import StaticSurrogate
 from src.utils.config import load_config
@@ -35,17 +35,11 @@ def main() -> None:
 
     env = build_pack_env(config["env"])
     reward_cfg = PaperRewardConfig(**config["reward"])
-    rl_cfg = DDPGConfig(
-        gamma=config["rl"]["gamma"],
-        actor_lr=config["rl"]["actor_lr"],
-        critic_lr=config["rl"]["critic_lr"],
-        tau=config["rl"]["tau"],
-        batch_size=config["rl"]["batch_size"],
-        buffer_size=config["rl"]["buffer_size"],
-        action_low=config["rl"]["action_low"],
-        action_high=config["rl"]["action_high"],
+    agent = build_agent_from_config(
+        state_dim=env.observation_space.shape[0],
+        action_dim=1,
+        rl_config=config["rl"],
     )
-    agent = DDPGAgent(state_dim=env.observation_space.shape[0], action_dim=1, config=rl_cfg)
 
     surrogate = StaticSurrogate(
         input_dim=env.observation_space.shape[0] + 1 ,  # state(7) + action(1)
