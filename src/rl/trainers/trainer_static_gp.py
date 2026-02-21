@@ -599,11 +599,11 @@ def train_cycle0(
 
     # actions = np.array([a[0] for _, a, _ in transitions], dtype=float)
     # print("Action stats: mean", actions.mean(), "std", actions.std(), "min", actions.min(), "max", actions.max())
-    # csv_path = "C:\\Users\\85721\\Desktop\\fast-charging-EV\\dataset.csv"
+    # csv_path = "C:\\Users\\85721\\Desktop\\fast-charging-EV\\dataset_td3.csv"
     # transitions = load_transitions_from_csv(csv_path)
    
 
-    # ckpt_path = "C:\\Users\\85721\\Desktop\\fast-charging-EV\\runs\\cycle0\\policy_start.pt"
+    # ckpt_path = "C:\\Users\\85721\\Desktop\\fast-charging-EV\\runs\\cycle0\\policy_start_td3.pt"
     # agent.load(str(ckpt_path))
     # 2) 静态代理模型训练
     dataset = build_dataset(transitions)

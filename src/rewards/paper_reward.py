@@ -47,19 +47,32 @@ def compute_paper_reward(
         config: 权重配置
     """
     # 1. SOC 进度奖励 (论文系数为 10) [cite: 346]
-    r_soc = 10.0 * (soc_next - soc_prev) 
+    r_soc = 50.0 * (soc_next - soc_prev) 
     
     # 2. 时间惩罚 (关键改进点)
     # 论文公式: -0.01 * (t_next - t_prev) [cite: 346]
-    r_time = -0.01
+    r_time = -0.05
     
     # 3. 电压约束 (硬约束优化) [cite: 347]
     r_v = 0.0
+    # if v_max_next > v_limit:
+    #     # 论文系数为 -2 [cite: 347]
+    #     r_v = -500.0 * (v_max_next - v_limit)
+
+
+    v_warning = v_limit - 0.03 
+    
+    if v_max_next > v_warning:
+        # 进入黄灯区，开始施加温和的“制动力” (线性平滑惩罚)
+        # 比如电压达到 4.18V 时，惩罚是 -50.0 * 0.01 = -0.5 分
+        # 这会稍微抵消一点 SOC 的收益，提示 Agent 开始减小电流
+        r_v = -50.0 * (v_max_next - v_warning)
+        
     if v_max_next > v_limit:
-        # 论文系数为 -2 [cite: 347]
-        r_v = -2.0 * (v_max_next - v_limit)
+        # 闯红灯越界，追加严厉的“撞墙”惩罚 (保留我们之前的设定)
+        r_v -= 500.0 * (v_max_next - v_limit)
         # 你的“触网费”可以保留，防止 Agent 长期蹭着边缘走
-        r_v -= 10.0 
+        # r_v -= 10.0 
     # r_v = 0.0
     # buffer_v = 0.02
     # if v_max_next > (v_limit - buffer_v):

@@ -119,24 +119,29 @@ def main() -> None:
         raise FileNotFoundError(f"Policy file not found: {policy_path}")
     
     print(f"Loading policy weights from {policy_path}...")
-    checkpoint = torch.load(policy_path, map_location=DEVICE, weights_only=False)
+    try:
+        agent.load(str(policy_path), map_location=str(DEVICE))
+        print("✅ Policy and Normalizer loaded successfully.")
+    except Exception as e:
+        print(f"❌ Failed to load policy: {e}")
+    # checkpoint = torch.load(policy_path, map_location=DEVICE, weights_only=False)
 
-    # [修改] 兼容加载逻辑
-    if isinstance(checkpoint, dict) and "actor" in checkpoint:
-        # A. 加载神经网络权重
-        agent.actor.load_state_dict(checkpoint["actor"])
-        print("✅ Actor weights loaded.")
+    # # # [修改] 兼容加载逻辑
+    # if isinstance(checkpoint, dict) and "actor" in checkpoint:
+    #     # A. 加载神经网络权重
+    #     agent.actor.load_state_dict(checkpoint["actor"])
+    #     print("✅ Actor weights loaded.")
         
-        # B. 加载归一化统计量 (关键修复)
-        if "state_norm" in checkpoint:
-            agent.state_norm = checkpoint["state_norm"]
-            print(f"✅ Normalizer loaded. (Count: {agent.state_norm.count})")
-        else:
-            print("❌ WARNING: Checkpoint 中没有 state_norm！Agent 可能会因为输入数值过大而失效 (输出0A)。")
-    else:
-        # 兼容旧格式 (如果有旧模型还想跑)
-        agent.actor.load_state_dict(checkpoint)
-        print("⚠️ Loaded legacy state_dict only. Normalizer missing!")
+    #     # B. 加载归一化统计量 (关键修复)
+    #     if "state_norm" in checkpoint:
+    #         agent.state_norm = checkpoint["state_norm"]
+    #         # print(f"✅ Normalizer loaded. (Count: {agent.state_norm.count})")
+    #     else:
+    #         print("❌ WARNING: Checkpoint 中没有 state_norm！Agent 可能会因为输入数值过大而失效 (输出0A)。")
+    # else:
+    #     # 兼容旧格式 (如果有旧模型还想跑)
+    #     agent.actor.load_state_dict(checkpoint)
+    #     print("⚠️ Loaded legacy state_dict only. Normalizer missing!")
 
     agent.actor.eval() # 切换到评估模式
 
