@@ -6,6 +6,7 @@ from typing import Callable, Dict, List, Tuple
 import csv
 import torch
 import numpy as np
+import pandas as pd
 import pybamm
 from scipy.interpolate import interp1d
 
@@ -137,7 +138,7 @@ def validate_full_charge_comparison(env, agent, surrogate, hold_steps=1, align_i
     plt.tight_layout()
     plt.show()
 
-def validate_surrogate_rollout(env, agent, surrogate, dataset, steps=20, hold_steps=1):
+def validate_surrogate_rollout(env, agent, surrogate, dataset, steps=5000, hold_steps=1):
     """
     对比 真实环境 vs 代理模型 的多步演化
     """
@@ -147,7 +148,7 @@ def validate_surrogate_rollout(env, agent, surrogate, dataset, steps=20, hold_st
     state, info = env.reset()
 
     #使用大电流测试
-    test_current = -15.0 
+    test_current = -8.0 
     action = np.array([test_current], dtype=np.float32)
     
     print(f"测试条件: 电流 {test_current}A, 每步时长 {hold_steps*10}s")
@@ -275,7 +276,7 @@ class Cycle0Config:
     noise_sigma_start: float = 0.20
     noise_sigma_end: float = 0.05
 
-    hold_steps: int = 1              # dt=10s，hold 5步=50s，更像阶梯恒流
+    hold_steps: int = 1              # dt=10s
     v_soft_max: float = 4.17   # 或 env.v_max - 0.03
     t_soft_max: float = 309.5  # 或 env.t_max - 1.5
 
@@ -324,7 +325,7 @@ def collect_real_data(
     config: Cycle0Config,
 ) -> List[tuple[np.ndarray, np.ndarray, np.ndarray]]:
     # 1.准备工作
-    low = float(agent.config.action_low)   # -35
+    low = float(agent.config.action_low)   # -30
     high = float(agent.config.action_high) # 0
     transitions: List[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
 
@@ -359,7 +360,7 @@ def collect_real_data(
         u_ocv = float(get_ocv(soc_curr))
 
         # 2. 设定物理边界：截止电压 4.2V，估算内阻 0.025 Ohm
-        v_limit = 4.22 
+        v_limit = 4.2 
         r_internal = 0.025 
 
         # 3. 计算物理安全电流边界 I_bound (根据论文公式 6-13) [cite: 238]
@@ -407,7 +408,7 @@ def collect_real_data(
             start_state = state.copy()
             accumulated_reward = 0.0
 
-            # 执行 hold steps (模拟宏观步长) (Time = t -> t + N*dt) 50s
+            # 执行 hold steps (模拟宏观步长) (Time = t -> t + N*dt) 10s
             for _ in range(config.hold_steps):
                 # 记录 step 前的 SOC
                 prev_soc = current_soc
@@ -450,7 +451,7 @@ def collect_real_data(
                     done = True
                     break
             # --- 3. 训练 Agent ---
-            # 存入的是：(0s状态, 50s动作, 50s总奖励, 50s状态)
+            # 存入的是：(0s状态, 10s动作, 10s总奖励, 10s状态)
             agent.observe(start_state, action_to_exec, accumulated_reward, state, done)
             # 只有当 buffer 数据够了才 update
             if len(agent.buffer) > agent.config.batch_size:
@@ -470,7 +471,7 @@ def collect_real_data(
                 f"SOC: {info['SOC_pack']:.4f} | Vmax: {info['V_cell_max']:.4f} | "
                 f"Buf: {len(agent.buffer)}"
             )
-
+    agent.save(str("runs//cycle0//policy_start.pt"))
     return transitions
 
 def obs_from_info(info: dict) -> np.ndarray:
@@ -545,6 +546,24 @@ def verify_dataset_coverage(transitions):
     plt.savefig('dataset_coverage_check.png')
     plt.show()
 
+def load_transitions_from_csv(filepath: str) -> List[Tuple[np.ndarray, np.ndarray, np.ndarray]]:
+    df = pd.read_csv(filepath)
+    
+    # 自动识别列
+    state_cols = [c for c in df.columns if c.startswith('s_')]
+    action_cols = ['action']
+    delta_cols = [c for c in df.columns if c.startswith('d_')]
+    
+    transitions = []
+    for _, row in df.iterrows():
+        state = row[state_cols].values.astype(np.float32)
+        action = row[action_cols].values.astype(np.float32)
+        delta = row[delta_cols].values.astype(np.float32)
+        transitions.append((state, action, delta))
+        
+    print(f"[OK] Loaded {len(transitions)} transitions from: {filepath}")
+    return transitions
+
 def train_cycle0(
     env: BasePackEnv,
     agent: DDPGAgent,
@@ -560,9 +579,14 @@ def train_cycle0(
     verify_dataset_coverage(transitions)
     save_transitions_to_csv(transitions, "dataset.csv")
 
-    actions = np.array([a[0] for _, a, _ in transitions], dtype=float)
-    print("Action stats: mean", actions.mean(), "std", actions.std(), "min", actions.min(), "max", actions.max())
+    # actions = np.array([a[0] for _, a, _ in transitions], dtype=float)
+    # print("Action stats: mean", actions.mean(), "std", actions.std(), "min", actions.min(), "max", actions.max())
+    # csv_path = "C:\\Users\\85721\\Desktop\\fast-charging-EV\\dataset.csv"
+    # transitions = load_transitions_from_csv(csv_path)
+   
 
+    # ckpt_path = "C:\\Users\\85721\\Desktop\\fast-charging-EV\\runs\\cycle0\\policy_start.pt"
+    # agent.load(str(ckpt_path))
     # 2) 静态代理模型训练
     dataset = build_dataset(transitions)
     # t_idx = -2 
@@ -585,7 +609,7 @@ def train_cycle0(
     print("静态代理模型训练完成。")
     
     # 3) 测试 surrogate 训练效果
-    validate_surrogate_rollout(env, agent, surrogate, dataset)
+    # validate_surrogate_rollout(env, agent, surrogate, dataset)
     # 3) N-step 误差评估（用 agent 跑真实轨迹，然后 surrogate 复现）
     validate_full_charge_comparison(env, agent, surrogate)
     # 4) 用静态代理训练 RL 策略
@@ -628,7 +652,7 @@ def train_cycle0(
             # 我们强制反转噪声方向，让它往负方向探索
             if a_det + noise > high:
                 noise = -abs(noise)
-            # 如果 (动作+噪声) 低于下界 -20，强制反转，向正方向探索
+            # 如果 (动作+噪声) 低于下界 -30，强制反转，向正方向探索
             elif a_det + noise < low:
                 noise = abs(noise)
             # D. 叠加并裁剪

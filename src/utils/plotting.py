@@ -55,13 +55,13 @@ def plot_episode(curve: Dict[str, List[float]], path: str | Path) -> None:
     plt.close(fig)
 
     # ---- 2) 奖励分项 ----
-    fig, ax = plt.subplots(1, 1, figsize=(10, 4))
-    for k in ["r_soc","r_v","r_action","r_time","r_const","r_track","r_finish"]:
-        if k in curve:
-            ax.plot(curve["t"], curve[k], label=k)
-    ax.set_title("Reward terms")
-    ax.grid(True)
-    ax.legend()
-    fig.tight_layout()
-    fig.savefig(path.with_suffix(".terms.png"))
-    plt.close(fig)
+    # fig, ax = plt.subplots(1, 1, figsize=(10, 4))
+    # for k in ["r_soc","r_v","r_action","r_time","r_const","r_track","r_finish"]:
+    #     if k in curve:
+    #         ax.plot(curve["t"], curve[k], label=k)
+    # ax.set_title("Reward terms")
+    # ax.grid(True)
+    # ax.legend()
+    # fig.tight_layout()
+    # fig.savefig(path.with_suffix(".terms.png"))
+    # plt.close(fig)

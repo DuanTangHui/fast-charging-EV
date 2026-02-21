@@ -161,20 +161,30 @@ def rollout_surrogate(
         # 6.【加入电压势垒 (Voltage Barrier)
         # 仅有撞墙后的惩罚不够，Agent 需要在撞墙前(4.15V)就感到疼痛。
         # 假设 compute_paper_reward 里没有这个逻辑，我们需要在这里手动补上。
-        barrier_penalty = 0.0
-        if v_mean > 4.15: # 软约束阈值
-            # 随着电压接近 4.2，惩罚呈指数增长
-            # 4.15V -> -0.2
-            # 4.18V -> -2.0
-            # 4.20V -> -20.0 (加上下面的 safety_penalty，总计 -70)
-            barrier_penalty = -2.0 * np.exp(30.0 * (v_mean - 4.18))
+        # barrier_penalty = 0.0
+        # if v_mean > 4.15: # 软约束阈值
+        #     # 方案 A：较缓的指数 (将系数从 30 降至 15)
+        #     # 4.15V -> -0.1
+        #     # 4.18V -> -0.5
+        #     # 4.20V -> -1.5
+        #     barrier_penalty = -0.5 * np.exp(15.0 * (v_mean - 4.18))
         
-        # 违规惩罚 (Violation Penalty)
-        safety_penalty = 0.0
-        if violation:
-            safety_penalty = -50.0 # 给予重罚
+       
 
-        step_reward = r_phys + barrier_penalty + safety_penalty
+        step_reward = r_phys 
+        # if v_mean > 4.15: # 软约束阈值
+        #     # 随着电压接近 4.2，惩罚呈指数增长
+        #     # 4.15V -> -0.2
+        #     # 4.18V -> -2.0
+        #     # 4.20V -> -20.0 (加上下面的 safety_penalty，总计 -70)
+        #     barrier_penalty = -2.0 * np.exp(30.0 * (v_mean - 4.18))
+        
+        # # 违规惩罚 (Violation Penalty)
+        # safety_penalty = 0.0
+        # if violation:
+        #     safety_penalty = -50.0 # 给予重罚
+
+        # step_reward = r_phys + barrier_penalty + safety_penalty
         total_reward += step_reward
 
         # 6) violation 与终止条件（尽量贴近真实环境口径）

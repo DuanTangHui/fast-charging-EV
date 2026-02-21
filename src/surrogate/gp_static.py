@@ -44,14 +44,14 @@ class StaticSurrogate:
         # 3. 【核心物理约束】: 强制温度不下降
         # 如果预测值 < 0，强制设为 0。
         # 这样 DDPG 就不会因为害怕降温（实际上不可能）而乱来了。
-        t_idx = -2  # 温度是倒数第2个
-        # 检查维度并应用约束
-        if delta_phys.ndim == 1:
-            # 单样本预测
-            delta_phys[t_idx] = max(0.0, delta_phys[t_idx])
-        else:
-            # Batch 预测
-            delta_phys[:, t_idx] = np.maximum(delta_phys[:, t_idx], 0.0)
+        # t_idx = -2  # 温度是倒数第2个
+        # # 检查维度并应用约束
+        # if delta_phys.ndim == 1:
+        #     # 单样本预测
+        #     delta_phys[t_idx] = max(0.0, delta_phys[t_idx])
+        # else:
+        #     # Batch 预测
+        #     delta_phys[:, t_idx] = np.maximum(delta_phys[:, t_idx], 0.0)
 
         return delta_phys, delta_std_phys
 
