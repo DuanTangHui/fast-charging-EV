@@ -1,69 +1,227 @@
 # Battery Fast-Charge Pack MBRL
 
-This repository provides a runnable, paper-style project scaffold inspired by
-"Adaptive Model-Based Reinforcement Learning for Fast-Charging Optimization of
-Lithium-Ion Batteries" and extended to a 3P6S pack with aging, cell heterogeneity,
-and an external SOH prior (STAPINN-like) for fast online calibration.
+本项目是一个可运行的“论文风格”电池快充优化框架，参考论文 *Adaptive Model-Based Reinforcement Learning for Fast-Charging Optimization of Lithium-Ion Batteries*，并扩展到：
 
-## Highlights
-- Pack-level environment with max-cell voltage/temperature constraints.
-- Static, differential, and combined surrogate models (NN-backed for now).
-- DDPG actor-critic with replaceable trainer logic for Cycle0/Adaptive cycles.
-- SOH prior pipeline with a fast calibration stage that regularizes to prior.
-- Fully runnable scripts with toy backend when liionpack/pybamm are unavailable.
+- 3P6S 电池包场景（Liionpack + PyBaMM SPME）
+- 单体不一致性与老化
+- 静态/差分/组合代理模型
+- 可切换 RL 策略（DDPG / TD3 / PPO）
+- 可接入 SOH 先验（STAPINN-like）
 
-## Quick Start
+---
+
+## 1. 你可以用它做什么？
+
+- 在真实环境（或 toy fallback）中采样充电轨迹
+- 训练静态代理模型（Cycle0）
+- 在代理模型上训练充电策略
+- 做自适应循环（Algorithm 2）：真实少量增量数据 + 差分模型更新 + 策略再训练
+- 对策略在真实环境中进行测试、可视化与指标记录
+
+---
+
+## 2. 环境准备（必看）
+
+### 2.1 Python 版本建议
+
+建议 Python 3.10+。
+
+### 2.2 安装依赖
+
 ```bash
 pip install -r requirements.txt
+```
+
+> 若你本机缺少 `liionpack/pybamm` 或求解器环境不完整，项目支持 fallback/toy backend（可运行，但物理精度会降低）。
+
+### 2.3 项目目录（核心）
+
+- `configs/`：配置文件（环境、奖励、RL、trainer 等）
+- `scripts/`：训练/评估入口脚本
+- `src/envs/`：环境定义
+- `src/surrogate/`：代理模型
+- `src/rl/`：RL 算法实现与训练器
+- `src/soh_prior/`：SOH 先验相关模块
+
+---
+
+## 3. 一次完整训练流程（推荐）
+
+## Step 1：训练 Cycle0（真实采样 + 静态代理 + 策略初训）
+
+```bash
 python scripts/train_cycle0_build_static_gp.py --config configs/pack_3p6s_spme.yaml
+```
+
+默认产物会在 `runs/cycle0/` 下，包括：
+
+- `agent_ckpt.pt`：agent 全量 checkpoint
+- `static_surrogate.pt`：静态代理模型
+- 训练日志与图像（若启用）
+
+## Step 2：训练 Adaptive Cycles（差分代理 + 组合代理 + 策略迭代）
+
+```bash
 python scripts/train_adaptive_cycles.py --config configs/pack_3p6s_spme_with_soh_prior.yaml
+```
+
+默认产物在 `runs/adaptive/` 下，包括：
+
+- `diff_surrogate.pt`：差分代理模型
+- metrics 与可视化图
+
+## Step 3：评估策略（离线评估）
+
+```bash
 python scripts/evaluate_policy.py --config configs/pack_3p6s_spme.yaml --ckpt runs/cycle0/policy.pt
 ```
 
-## Project Layout
-See the config files in `configs/` for key hyperparameters, sampling step,
-reward weights, and environment settings.
+## Step 4：真实环境回放测试（建议）
 
-## 1.从脚本入口开始
+```bash
+python scripts/test_real_policy.py --config configs/pack_3p6s_spme.yaml --policy runs/cycle0/agent_ckpt.pt
+```
 
--`scripts/train_cycle0_build_static_gp.py`：跑 Cycle0（真实环境采样 → 训练静态代理 → 代理上训练策略）。这是最核心的训练入口。
+可选参数：
 
--`scripts/train_adaptive_cycles.py`：跑论文 Algorithm 2 的自适应循环（少量真实采样 → 更新差分代理 → 组合代理上训练）。
+- `--no-guard`：关闭安全守卫（仅建议调试时使用）
 
--`scripts/evaluate_policy.py`：加载策略并评估/画图。
+---
 
-## 2.环境与观测（相当于“仿真器”）
+## 4. 配置文件怎么改（重点）
 
--环境在 `src/envs/liionpack_spme_pack_env.py`：包含 pack 级别的 SOC/V/T 统计量与动作电流 I，默认 toy fallback 也能跑。
+以 `configs/pack_3p6s_spme.yaml` 为例，常改动区域：
 
--观测构造在 `src/envs/observables.py`：将 cell-level 汇总为 pack-level 的 max/min/std 等。
+- `env`: 环境参数（`dt`, `max_steps`, `v_max`, `t_max`, 并串联数等）
+- `reward`: 奖励权重（`w_soc`, `w_time`, `w_v`, `w_t`, `w_const`）
+- `rl`: 算法及超参数
+- `trainer.cycle0` / `trainer.adaptive`: 训练轮次与每轮更新策略
 
-## 3.奖励函数（严格贴论文式(24)）
+### 4.1 RL 算法切换
 
-`src/rewards/paper_reward.py`：SOC 增益、时间惩罚、电压越界惩罚、温度越界惩罚都在这里计算。
+在配置中修改：
 
-## 4.代理模型（核心创新点之一）
+```yaml
+rl:
+  algorithm: td3  # 可选: ddpg | td3 | ppo
+```
 
--静态代理 StaticSurrogate（G0）在 `src/surrogate/gp_static.py`。
+### 4.2 TD3 专属参数（仅 `algorithm: td3` 生效）
 
--差分代理 DifferentialSurrogate（G^）在 `src/surrogate/gp_differential.py`（仍保留接口），组合代理 CombinedSurrogate 在 src/surrogate/gp_combined.py。
+```yaml
+rl:
+  td3:
+    policy_noise: 0.2
+    noise_clip: 0.5
+    policy_delay: 2
+```
 
--底层用 NN ensemble (`src/surrogate/nn_delta_model.py`) 输出均值+不确定性。
+### 4.3 PPO 专属参数（仅 `algorithm: ppo` 生效）
 
--训练数据与归一化逻辑在 `src/surrogate/dataset.py`（你遇到的 overflow 已修复）。
+```yaml
+rl:
+  ppo:
+    clip_ratio: 0.2
+    ppo_epochs: 4
+    gae_lambda: 0.95
+    entropy_coef: 0.0
+```
 
--测试： `python scripts/test_real_policy.py --config configs/pack_3p6s_spme.yaml --policy runs/cycle0/policy.pt`
+---
 
-## 5.SOH 先验与快速标定
+## 5. 三种算法在本项目中的训练语义
 
--SOH Predictor（目前 Dummy）在 `src/soh_prior/stapinn_predictor.py`，特征提取在    `src/soh_prior/feature_extraction.py `，SOH→参数先验在 `src/soh_prior/soh2param_mapper.py`。
+为避免“换算法但训练流程没换”的问题，当前训练器已区分：
 
--快速标定在 `src/calibration/fast_calibrator.py`，用于对齐先验并更新老化参数。
+- **DDPG / TD3（off-policy）**
+  - 使用 replay buffer 语义
+  - 保留 `updates_per_epoch` 多次更新策略
+  - 允许外部探索噪声
 
+- **PPO（on-policy）**
+  - 不再叠加额外外部高斯噪声（策略本身已随机）
+  - 按 on-policy 节奏在 rollout 后触发更新
 
-## 思路
-我现在想做一个电池组的快速充电策略优化研究。 第一点：想利用liionpack的spme模型搭建一个3P6S 电池组老化电池的真实环境，根据文章中的方法，我打算利用神经网络或高斯过程方法来拟合一个代理模型，以此提升后续强化学习的训练过程。 第二点：前期的工作做电池组的soh估计，将电池组看作一个整体，输入充电过程中一些特征的变化曲线做soh预测，想将此前的研究融入到快速充电策略优化研究中。我的想法是建立一个简单的映射关系（或者一个小网络），将 STAPINN 输出的 SOH 值映射为差分模型的初始参数猜测（Initial Guess）。这样，差分模型只需要极少量的真实数据（比如 1-2 个充电片段）就能迅速收敛。SOH 模型在这里起到了**“先验知识提供者（Prior Knowledge Provider）”**的作用。 第三点 强化学习方法的选择，奖励函数的设计，环境的状态定义，动作定义，初步思路要考虑电池组的单体电池间的差异，所以需要一些表征差异的状态，不能单纯是soc、v、T。
+---
 
+## 6. 常见运行命令（速查）
 
-我用 Python 写了一个“论文级、可运行”的完整项目框架代码：参考论文《Adaptive Model-Based Reinforcement Learning for Fast-Charging Optimization of Lithium-Ion Batteries》的设计（奖励函数、采样周期、折扣因子、模型学习方式、训练流程 Algorithm 1/2），但研究对象升级为“3P6S 电池组（liionpack + PyBaMM SPME）+ 老化 + 单体差异”，并融合一个外部 SOH 模型（STAPINN）作为先验提供者以加速差分模型/代理模型的在线校准，注意强化学习的方法设计成可替换的。 
-现在我已经完成了第一步的静态代理模型的训练和在静态代理模型上训练agent，现在我需要根据修改好的配置来修改动态加入的差分模型的相关代码，你帮我一步步分析代码。
+### 6.1 使用 DDPG
+
+1) 改配置：`rl.algorithm: ddpg`
+2) 运行：
+
+```bash
+python scripts/train_cycle0_build_static_gp.py --config configs/pack_3p6s_spme.yaml
+python scripts/train_adaptive_cycles.py --config configs/pack_3p6s_spme_with_soh_prior.yaml
+```
+
+### 6.2 使用 TD3
+
+1) 改配置：`rl.algorithm: td3`
+2) 检查 `rl.td3` 参数
+3) 同上运行训练脚本
+
+### 6.3 使用 PPO
+
+1) 改配置：`rl.algorithm: ppo`
+2) 检查 `rl.ppo` 参数
+3) 同上运行训练脚本
+
+---
+
+## 7. 输出文件说明
+
+- `runs/cycle0/agent_ckpt.pt`：Cycle0 结束的 agent
+- `runs/cycle0/static_surrogate.pt`：静态代理
+- `runs/adaptive/diff_surrogate.pt`：差分代理
+- `runs/**/metrics.jsonl`：训练日志（可用于后处理画图）
+- `runs/**/episode_*.png` / `cycle_*_epoch_*.png`：轨迹图
+
+---
+
+## 8. 常见问题（FAQ）
+
+### Q1：报错找不到 checkpoint？
+
+请先运行 Cycle0，确认 `runs/cycle0/agent_ckpt.pt` 已生成，再运行 adaptive。
+
+### Q2：为什么策略输出经常接近 0A？
+
+- 检查 `action_low/action_high` 是否合理
+- 检查奖励中越界惩罚是否过强
+- 检查训练是否正确加载了 normalizer 与完整 checkpoint
+
+### Q3：PPO 切换后效果不稳定？
+
+先从以下参数调优：
+
+- `ppo_epochs`
+- `clip_ratio`
+- `gae_lambda`
+- `batch_size`
+
+并适当增加 `policy_rollouts_per_epoch`。
+
+### Q4：liionpack 环境跑不起来怎么办？
+
+可先使用 toy backend 验证流程通不通，再回到真实环境排查求解器与参数配置。
+
+---
+
+## 9. 开发建议
+
+- 先固定一个配置跑通端到端流程，再逐项改超参
+- 每次只改一个维度（奖励 / 算法 / env 边界）
+- 对比实验时固定随机种子并保存配置快照
+
+---
+
+## 10. 入口脚本索引
+
+- `scripts/train_cycle0_build_static_gp.py`：Cycle0 训练
+- `scripts/train_adaptive_cycles.py`：Adaptive 训练
+- `scripts/evaluate_policy.py`：评估
+- `scripts/test_real_policy.py`：真实环境策略测试
+
+如果你希望，我下一步可以继续补一份“**实验对照模板**”（如 DDPG vs TD3 vs PPO 的统一实验表格与推荐超参初值）。

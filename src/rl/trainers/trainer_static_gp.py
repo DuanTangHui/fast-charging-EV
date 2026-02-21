@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable, Dict, List, Tuple
+from typing import Any, Callable, Dict, List, Tuple
 import csv
 import torch
 import numpy as np
@@ -18,12 +18,25 @@ from ...evaluation.reports import summarize_episode
 from ...rewards.paper_reward import PaperRewardConfig, compute_paper_reward
 from ...surrogate.dataset import build_dataset
 from ...surrogate.gp_static import StaticSurrogate
-from ..actor_critic_ddpg import DDPGAgent
 from ..noise import GaussianNoise
 from ...utils.logging import log_metrics
 from ...envs.observables import curve_from_infos
 from ...utils.plotting import plot_episode
 import matplotlib.pyplot as plt
+
+
+def _is_on_policy_agent(agent: Any) -> bool:
+    return bool(getattr(agent, "is_on_policy", False))
+
+
+def _agent_buffer_len(agent: Any) -> int:
+    buffer_obj = getattr(agent, "buffer", None)
+    return len(buffer_obj) if buffer_obj is not None else 0
+
+
+def _agent_ready_to_update(agent: Any) -> bool:
+    batch_size = int(getattr(getattr(agent, "config", object()), "batch_size", 1))
+    return _agent_buffer_len(agent) >= batch_size
 
 
 def validate_full_charge_comparison(env, agent, surrogate, hold_steps=1, align_interval=50):
@@ -321,7 +334,7 @@ def get_chen2020_ocv_func():
 def collect_real_data(
     env: BasePackEnv,
     reward_cfg: PaperRewardConfig,
-    agent: DDPGAgent,
+    agent: Any,
     config: Cycle0Config,
 ) -> List[tuple[np.ndarray, np.ndarray, np.ndarray]]:
     # 1.准备工作
@@ -395,7 +408,10 @@ def collect_real_data(
         while not done:
             # --- A. 选择动作 ---
             raw_action = float(agent.act(state)[0])
-            a_noisy = raw_action + noise.sample()
+            if _is_on_policy_agent(agent):
+                a_noisy = raw_action
+            else:
+                a_noisy = raw_action + noise.sample()
             a_clipped = float(np.clip(a_noisy, low, high))
             #    B.安全守卫（用上一时刻 info）
             safe_action = physics_limit_action(a_clipped, info)
@@ -454,7 +470,7 @@ def collect_real_data(
             # 存入的是：(0s状态, 10s动作, 10s总奖励, 10s状态)
             agent.observe(start_state, action_to_exec, accumulated_reward, state, done)
             # 只有当 buffer 数据够了才 update
-            if len(agent.buffer) > agent.config.batch_size:
+            if (not _is_on_policy_agent(agent)) and _agent_ready_to_update(agent):
                 agent.update()
             # # --- 4. 收集数据给 GP ---
             # Delta = State(t + 50s) - State(t)
@@ -469,8 +485,10 @@ def collect_real_data(
             print(
                 f"[Warmup] Ep {ep+1} | R: {ep_reward:.2f} | "
                 f"SOC: {info['SOC_pack']:.4f} | Vmax: {info['V_cell_max']:.4f} | "
-                f"Buf: {len(agent.buffer)}"
+                f"Buf: {_agent_buffer_len(agent)}"
             )
+    if _is_on_policy_agent(agent) and _agent_ready_to_update(agent):
+        agent.update()
     agent.save(str("runs//cycle0//policy_start.pt"))
     return transitions
 
@@ -566,7 +584,7 @@ def load_transitions_from_csv(filepath: str) -> List[Tuple[np.ndarray, np.ndarra
 
 def train_cycle0(
     env: BasePackEnv,
-    agent: DDPGAgent,
+    agent: Any,
     reward_cfg: PaperRewardConfig,
     surrogate: StaticSurrogate,
     config: Cycle0Config,
@@ -618,7 +636,7 @@ def train_cycle0(
     actor_losses = []
     critic_losses = []
    
-    print(f"训练开始前 Buffer 大小: {len(agent.buffer)}")
+    print(f"训练开始前 Buffer 大小: {_agent_buffer_len(agent)}")
 
     for epoch in range(config.policy_epochs):
         
@@ -645,7 +663,10 @@ def train_cycle0(
             a_det = float(agent.act(s)[0])
          
             # B. 生成高斯噪声
-            noise = np.random.normal(0, current_sigma)
+            if _is_on_policy_agent(agent):
+                noise = 0.0
+            else:
+                noise = np.random.normal(0, current_sigma)
 
             # C. 【可选优化】防止 0A 截断的非对称噪声技巧
             # 如果当前动作已经很接近 0 (比如 > -2A)，且噪声是正的，这会导致结果 > 0 被截断
@@ -760,13 +781,17 @@ def train_cycle0(
             var = a_sq / max(1, total_cnt) - mean**2
             std = (var if var > 0 else 0.0) ** 0.5
             print(f"[BUF] actions: zero_ratio={zero_cnt/total_cnt:.3f} mean={mean:.3f} std={std:.3f} min={a_min:.3f} max={a_max:.3f}")
-    
+
+            if _is_on_policy_agent(agent) and _agent_ready_to_update(agent):
+                loss_a, loss_c = agent.update()
+                epoch_a_loss.append(loss_a)
+                epoch_c_loss.append(loss_c)
 
         # --- 【修改点 3】: 更新并记录 Loss ---
         # 确保 Agent 在每个 epoch 结束时进行多次更新
         for _ in range(config.updates_per_epoch):
             # 只有当 buffer 够大时才 update
-            if len(agent.buffer) > agent.config.batch_size:
+            if (not _is_on_policy_agent(agent)) and _agent_ready_to_update(agent):
                 # 假设 update 返回 (actor_loss, critic_loss)
                 # 如果你的 update 没有返回值，需要去修改 DDPGAgent.update
                 loss_a, loss_c = agent.update()
