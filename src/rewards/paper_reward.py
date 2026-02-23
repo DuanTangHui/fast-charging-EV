@@ -55,12 +55,7 @@ def compute_paper_reward(
     
     # 3. 电压约束 (硬约束优化) [cite: 347]
     r_v = 0.0
-    # if v_max_next > v_limit:
-    #     # 论文系数为 -2 [cite: 347]
-    #     r_v = -500.0 * (v_max_next - v_limit)
-
-
-    v_warning = v_limit - 0.03 
+    v_warning = v_limit - 0.03
     
     if v_max_next > v_warning:
         # 进入黄灯区，开始施加温和的“制动力” (线性平滑惩罚)
@@ -69,47 +64,8 @@ def compute_paper_reward(
         r_v = -50.0 * (v_max_next - v_warning)
         
     if v_max_next > v_limit:
-        # 闯红灯越界，追加严厉的“撞墙”惩罚 (保留我们之前的设定)
-        r_v -= 500.0 * (v_max_next - v_limit)
-        # 你的“触网费”可以保留，防止 Agent 长期蹭着边缘走
-        # r_v -= 10.0 
-    # r_v = 0.0
-    # buffer_v = 0.02
-    # if v_max_next > (v_limit - buffer_v):
-    #     # 【关键修改】引入归一化比率 ratio
-    #     # ratio 在 4.15V 时为 0，在 4.20V 时为 1
-    #     ratio = (v_max_next - (v_limit - buffer_v)) / buffer_v
-        
-    #     # 此时，在 4.2V 处，r_v 刚好是 -10.0
-    #     r_v = -2.0 * (ratio ** 4) 
-        
-    #     if v_max_next > v_limit:
-    #         # 越界部分增加极高斜率
-    #         r_v -= 100.0 * (v_max_next - v_limit)    
-    # buffer_v = 0.05  # 电压缓冲区，允许轻微超出限制
-
-    # r_v = 0.0
-
-    # if v_max_next > v_limit - buffer_v:
-
-    #     # 论文系数为 -2 [cite: 347]
-
-    #     r_v = -5.0 * (v_max_next - (v_limit - buffer_v)) ** 2
-
-    #     if v_max_next > v_limit:
-
-    #         # 你的“触网费”可以保留，防止 Agent 长期蹭着边缘走
-
-    #         r_v -= 1000.0 * (v_max_next - v_limit)
-    # buffer_v = 0.02   # 原来 0.05
-    # r_v= 0.0
-    # if v_max_next > v_limit - buffer_v:
-    #     # 二次项：靠近上限时就明显扣分
-    #     r_v = -400.0 * (v_max_next - (v_limit - buffer_v)) ** 2
-
-    #     # 超过 v_limit 的线性项（强力）：一旦过压就巨痛，压过“提前结束省下的时间”
-    #     if v_max_next > v_limit:
-    #         r_v -= 5000.0 * (v_max_next - v_limit)
+        r_v -= 500.0 * (v_max_next - v_limit) 
+      
     
     # 4. 温度约束 [cite: 348]
     # 论文逻辑：不越界为 0，越界则扣分 (系数为 -1)
