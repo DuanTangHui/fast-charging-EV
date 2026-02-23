@@ -65,7 +65,7 @@ class BasePackEnv(gym.Env):
 
     约定：
     - 动作为 1 维连续值：充电电流 I（A）
-    - 这里默认“负值为充电”，动作范围 [-30, 0]
+    - 这里默认“负值为充电”，动作范围 [-40, 0]
       若你后续要扩展为更大电流上限或双向电流，可以改 action_space。
     - 观测维度固定为 7（对应 PackObservation.as_array）
     """
@@ -83,7 +83,7 @@ class BasePackEnv(gym.Env):
         # 动作空间：充电电流 I（单位 A）
         # 负数表示充电；0 表示不充
         self.action_space = gym.spaces.Box(
-            low=np.array([-30.0], dtype=np.float32),
+            low=np.array([-40.0], dtype=np.float32),
             high=np.array([0.0], dtype=np.float32),
             shape=(1,),
             dtype=np.float32,

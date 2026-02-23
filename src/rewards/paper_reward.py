@@ -51,11 +51,17 @@ def compute_paper_reward(
     
     # 2. 时间惩罚 (关键改进点)
     # 论文公式: -0.01 * (t_next - t_prev) [cite: 346]
-    r_time = -0.05
-    
+    r_time = -0.1
+    # 奖励大电流！
+    r_action = -0.05 * action_current
     # 3. 电压约束 (硬约束优化) [cite: 347]
     r_v = 0.0
-    v_warning = v_limit - 0.03
+    # if v_max_next > v_limit:
+    #     # 论文系数为 -2 [cite: 347]
+    #     r_v = -500.0 * (v_max_next - v_limit)
+
+
+    v_warning = v_limit - 0.02 
     
     if v_max_next > v_warning:
         # 进入黄灯区，开始施加温和的“制动力” (线性平滑惩罚)
@@ -64,8 +70,8 @@ def compute_paper_reward(
         r_v = -50.0 * (v_max_next - v_warning)
         
     if v_max_next > v_limit:
-        r_v -= 500.0 * (v_max_next - v_limit) 
-      
+        # 闯红灯越界，追加严厉的“撞墙”惩罚 (保留我们之前的设定)
+        r_v -= 500.0 * (v_max_next - v_limit)
     
     # 4. 温度约束 [cite: 348]
     # 论文逻辑：不越界为 0，越界则扣分 (系数为 -1)
@@ -75,9 +81,10 @@ def compute_paper_reward(
 
     # 5. 一致性惩罚 (保留你的原始设计，但调低权重)
     # 因为 1000s 的快充必然会牺牲一部分一致性
-    r_const = -5.0 * max(0.0, std_soc_next - 0.012)
+    r_const = 0.0
+    # r_const = -5.0 * max(0.0, std_soc_next - 0.012)
 
-    total_reward = r_soc + r_time + r_v + r_t + r_const
+    total_reward = r_soc + r_time + r_v + r_t + r_const + r_action
 
 
     return total_reward, r_soc, r_time, r_v, r_t, r_const, 0.0
