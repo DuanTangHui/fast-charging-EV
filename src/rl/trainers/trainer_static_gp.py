@@ -414,8 +414,8 @@ def collect_real_data(
                 a_noisy = raw_action + noise.sample()
             a_clipped = float(np.clip(a_noisy, low, high))
             #    B.安全守卫（用上一时刻 info）
-            safe_action = physics_limit_action(a_clipped, info)
-            safe_action = float(np.clip(safe_action, low, high))
+            # safe_action = physics_limit_action(a_clipped, info)
+            safe_action = float(np.clip(a_clipped, low, high))
 
             # 准备执行的动作
             action_to_exec = np.array([safe_action], dtype=np.float32)
