@@ -1,34 +1,38 @@
-seed: 11
+seed: 7
 run_name: pack_3p6s_spme_with_soh_prior
 backend: liionpack
 
 env:
-  backend: liionpack
   parameter_set: Chen2020
   nproc: 16
   Rb: 1.5e-6
-  Rc: 1e-2
-  Ri_init: 5e-2
-  ocv_init: 4.0
-  dt: 10.0 # RL每30s决策一次
+  Rc:  5e-3
+  Ri_init:  5e-3
+  ocv_init: 3.5
+  dt: 10.0 # RL每10s决策一次
   max_steps: 720 #RL每个episode最多720步
   v_max: 4.2 #单体电池最高电压
-  t_max: 333.15 #单体电池最高温度 （单位K即60℃）
+  t_max: 318.15 #单体电池最高温度 （单位K即45℃）
   pack_cells_p: 3 #电池包并联3个单体电池
   pack_cells_s: 6 #电池包串联6个单体电池
   terminate_on_violation: true #是否在违反约束时终止episode
   observation: 
     include_std: true #包含电池单体电压和温度的标准差->考虑电池单体间的差异
-  htc: 10.0  
+  htc: 100.0  
+  soc_init_low: 0.2
+  soc_init_high: 0.3
+  soc_sigma_reset: 0.01
+  
 reward:
-  w_soc: 10.0
-  w_time: 0.05
+  w_soc: 50.0
+  w_time: 0.003
   w_v: 100.0
   w_t: 1.0
   w_const: 20.0
   # enable_pack_extensions: false
 
 rl:
+  algorithm: td3  # 可选: ddpg | td3 | ppo
   gamma: 0.99
   actor_lr: 0.001
   critic_lr: 0.0001
@@ -36,31 +40,52 @@ rl:
   batch_size: 64
   buffer_size: 50000
   exploration_sigma: 0.3
-  action_low: -20.0
+  action_low: -30.0
   action_high: 0.0
   train_steps_per_epoch: 200
 
+  # TD3 专属配置（algorithm=td3 时生效）
+  td3:
+    policy_noise: 0.2
+    noise_clip: 0.5
+    policy_delay: 2
+
+  # PPO 专属配置（algorithm=ppo 时生效）
+  ppo:
+    clip_ratio: 0.2
+    ppo_epochs: 4
+    gae_lambda: 0.95
+    entropy_coef: 0.0
+
 surrogate:
   hidden_sizes: [128, 128]
-  ensemble_size: 3
+  ensemble_size: 5
   learning_rate: 0.001
 
 trainer:
   cycle0:
-    real_episodes: 6
+    real_episodes: 50
     surrogate_epochs: 25
-    policy_epochs: 6
+    policy_epochs: 100
   adaptive:
-    cycles: 3
-    real_episodes_per_cycle: 2
-    surrogate_epochs: 10
-    policy_epochs: 5
+    cycles: 2
+    real_episodes_per_cycle: 30
+    surrogate_epochs: 20
+    policy_epochs: 100
+
+    # NEW (建议显式写出来)
+    policy_rollouts_per_epoch: 3
+    updates_per_epoch: 50
+    noise_sigma_start: 2.0
+    noise_sigma_end: 0.1
+    plot_interval: 1
+
 
 soh_prior:
-  enabled: true
-  lambda_prior: 2.0
+  enabled: False
+  lambda_prior: 1.0
   theta_dim: 3
-  dummy_soh: 0.93
+  dummy_soh: 0.95
 
 logging:
   runs_dir: runs

@@ -11,6 +11,8 @@ from typing import Dict, Tuple
 class PaperRewardConfig:
     """ reward 权重"""
 
+    # w_soc: float = 80.0     # 提高 SOC 奖励
+    # w_time: float = 0.03    # 降低时间惩罚
     w_soc: float = 50.0     # 提高 SOC 奖励
     w_time: float = 0.003    # 降低时间惩罚
     w_v: float = 100.0      # 强电压惩罚
@@ -29,7 +31,8 @@ def compute_paper_reward(
     v_limit: float,
     t_limit: float,
     config: PaperRewardConfig,
-) -> Tuple[float, float, float, float, float, float, float]:
+    dt: float = 10.0 # 你的观测步长
+) -> Tuple[float, ...]:
     """
     核心奖励计算函数 (Core Reward Logic).
     Arguments:
@@ -43,53 +46,86 @@ def compute_paper_reward(
         t_limit: 温度限制 (e.g. 333.15)
         config: 权重配置
     """
-
-    # 1. SOC 奖励 (限制为非负)
-    delta_soc = max(0, soc_next - soc_prev)
-    r_soc = config.w_soc * delta_soc
+    # 1. SOC 进度奖励 (论文系数为 10) [cite: 346]
+    r_soc = 50.0 * (soc_next - soc_prev) 
     
-    # 2. 时间惩罚
-    r_time = -config.w_time
+    # 2. 时间惩罚 (关键改进点)
+    # 论文公式: -0.01 * (t_next - t_prev) [cite: 346]
+    r_time = -0.05
     
-    # 3. 电压惩罚 (软约束 + 硬约束)
+    # 3. 电压约束 (硬约束优化) [cite: 347]
     r_v = 0.0
-    v_soft_limit = v_limit - 0.05  # e.g. 4.15V
+    # if v_max_next > v_limit:
+    #     # 论文系数为 -2 [cite: 347]
+    #     r_v = -500.0 * (v_max_next - v_limit)
+
+
+    v_warning = v_limit - 0.03 
     
-    # A. 硬约束：越界直接重罚
-    if v_max_next > v_limit:
-        r_v -= config.w_v * (v_max_next - v_limit)
-        r_v -= 10.0 # 额外触网费
+    if v_max_next > v_warning:
+        # 进入黄灯区，开始施加温和的“制动力” (线性平滑惩罚)
+        # 比如电压达到 4.18V 时，惩罚是 -50.0 * 0.01 = -0.5 分
+        # 这会稍微抵消一点 SOC 的收益，提示 Agent 开始减小电流
+        r_v = -50.0 * (v_max_next - v_warning)
         
-    # B. 软约束：在 4.15V ~ 4.2V 之间，施加指数惩罚
-    elif v_max_next > v_soft_limit:
-        r_v -= 50.0 * ((v_max_next - v_soft_limit) ** 2)
+    if v_max_next > v_limit:
+        # 闯红灯越界，追加严厉的“撞墙”惩罚 (保留我们之前的设定)
+        r_v -= 500.0 * (v_max_next - v_limit)
+        # 你的“触网费”可以保留，防止 Agent 长期蹭着边缘走
+        # r_v -= 10.0 
+    # r_v = 0.0
+    # buffer_v = 0.02
+    # if v_max_next > (v_limit - buffer_v):
+    #     # 【关键修改】引入归一化比率 ratio
+    #     # ratio 在 4.15V 时为 0，在 4.20V 时为 1
+    #     ratio = (v_max_next - (v_limit - buffer_v)) / buffer_v
+        
+    #     # 此时，在 4.2V 处，r_v 刚好是 -10.0
+    #     r_v = -2.0 * (ratio ** 4) 
+        
+    #     if v_max_next > v_limit:
+    #         # 越界部分增加极高斜率
+    #         r_v -= 100.0 * (v_max_next - v_limit)    
+    # buffer_v = 0.05  # 电压缓冲区，允许轻微超出限制
+
+    # r_v = 0.0
+
+    # if v_max_next > v_limit - buffer_v:
+
+    #     # 论文系数为 -2 [cite: 347]
+
+    #     r_v = -5.0 * (v_max_next - (v_limit - buffer_v)) ** 2
+
+    #     if v_max_next > v_limit:
+
+    #         # 你的“触网费”可以保留，防止 Agent 长期蹭着边缘走
+
+    #         r_v -= 1000.0 * (v_max_next - v_limit)
+    # buffer_v = 0.02   # 原来 0.05
+    # r_v= 0.0
+    # if v_max_next > v_limit - buffer_v:
+    #     # 二次项：靠近上限时就明显扣分
+    #     r_v = -400.0 * (v_max_next - (v_limit - buffer_v)) ** 2
+
+    #     # 超过 v_limit 的线性项（强力）：一旦过压就巨痛，压过“提前结束省下的时间”
+    #     if v_max_next > v_limit:
+    #         r_v -= 5000.0 * (v_max_next - v_limit)
     
-    # 4. 温度约束
-    r_t = -config.w_t * max(0.0, t_max_next - t_limit)
+    # 4. 温度约束 [cite: 348]
+    # 论文逻辑：不越界为 0，越界则扣分 (系数为 -1)
+    r_t = 0.0
+    if t_max_next > t_limit:
+        r_t = -1.0 * (t_max_next - t_limit)
 
-    # 5. SOC 一致性惩罚
-    # r_const = -config.w_const * max(0.0, std_soc_next)
-    r_const = -config.w_const * max(0.0, std_soc_next - 0.012)
+    # 5. 一致性惩罚 (保留你的原始设计，但调低权重)
+    # 因为 1000s 的快充必然会牺牲一部分一致性
+    r_const = -5.0 * max(0.0, std_soc_next - 0.012)
+
+    total_reward = r_soc + r_time + r_v + r_t + r_const
+
+
+    return total_reward, r_soc, r_time, r_v, r_t, r_const, 0.0
     
-    # 6. 动作惩罚 (Action Penalty)
-    # 抑制无脑大电流，引导平滑充电
-    soc = soc_next  # 或 soc_prev
-
-    # 0~1 的门控：soc<0.85 几乎不惩罚；soc>0.95 惩罚拉满
-    gate = np.clip((soc - 0.85) / (0.95 - 0.85), 0.0, 1.0)
-
-    # action_current ∈ [-20, 0]
-    r_action = -(config.w_action * (1.0 + 9.0 * gate)) * (action_current / 20.0) ** 2
-
-    # r_action = -config.w_action * (action_current / 20.0) ** 2
-
-    # r_action = -config.w_action * (action_current ** 2)
-
-    # 或者至少打印：
-    # print("[ACTPEN] w_action=", config.w_action, "a=", action_current, "term=", (action_current/20.0)**2)
-
-    return r_soc + r_time + r_v + r_t + r_const + r_action,r_soc ,r_time ,r_v , r_t , r_const , r_action
-
 
 def reward_from_info(prev: Dict, next_info: Dict, config: PaperRewardConfig, v_limit: float, t_limit: float) -> float:
     """方便函数：从 info 字典计算奖励"""
@@ -112,4 +148,4 @@ def reward_from_info(prev: Dict, next_info: Dict, config: PaperRewardConfig, v_l
         config=config,
     )
     
-    return r,r_soc ,r_time ,r_v , r_t , r_const , r_action
+    return r

@@ -22,6 +22,7 @@ reward:
   # enable_pack_extensions: false
 
 rl:
+  algorithm: td3  # 可选: ddpg | td3 | ppo
   gamma: 0.99
   actor_lr: 0.001
   critic_lr: 0.0001
@@ -29,9 +30,22 @@ rl:
   batch_size: 64
   buffer_size: 50000
   exploration_sigma: 0.3
-  action_low: 0.0
-  action_high: 60.0
+  action_low: -35.0
+  action_high: 0.0
   train_steps_per_epoch: 200
+
+  # TD3 专属配置（algorithm=td3 时生效）
+  td3:
+    policy_noise: 0.2
+    noise_clip: 0.5
+    policy_delay: 2
+
+  # PPO 专属配置（algorithm=ppo 时生效）
+  ppo:
+    clip_ratio: 0.2
+    ppo_epochs: 4
+    gae_lambda: 0.95
+    entropy_coef: 0.0
 
 surrogate:
   hidden_sizes: [128, 128]

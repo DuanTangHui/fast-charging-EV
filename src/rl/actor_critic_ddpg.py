@@ -125,6 +125,7 @@ class DDPGAgent:
         # 回放与归一化
         self.buffer = ReplayBuffer(config.buffer_size)
         self.state_norm = RunningNormalizer(state_dim)
+        self.is_on_policy = False
 
     def act(self, state: np.ndarray) -> np.ndarray:
         """ 根据当前状态选择动作（只做归一化，不更新统计量）。
@@ -194,3 +195,45 @@ class DDPGAgent:
             target_param.data.copy_(
                 target_param.data * (1.0 - self.config.tau) + source_param.data * self.config.tau
             )
+
+    def save(self, path: str) -> None:
+        """Save a full checkpoint for continuing training (Algorithm 2)."""
+        ckpt = {
+            "actor": self.actor.state_dict(),
+            "critic": self.critic.state_dict(),
+            "target_actor": self.target_actor.state_dict(),
+            "target_critic": self.target_critic.state_dict(),
+            "actor_opt": self.actor_opt.state_dict(),
+            "critic_opt": self.critic_opt.state_dict(),
+            "config": self.config,
+            "state_norm": {
+                "dim": self.state_norm.dim,
+                "min_std": self.state_norm.min_std,
+                "count": self.state_norm.count,
+                "mean": self.state_norm.mean,
+                "m2": self.state_norm.m2,
+            },
+            "replay": self.buffer.state_dict(),  # 依赖你在 replay_buffer.py 加的方法
+        }
+        torch.save(ckpt, path)
+
+    def load(self, path: str, map_location: str | None = "cpu") -> None:
+        """Load a full checkpoint for continuing training (Algorithm 2)."""
+        ckpt = torch.load(path, map_location=map_location)
+
+        self.actor.load_state_dict(ckpt["actor"])
+        self.critic.load_state_dict(ckpt["critic"])
+        self.target_actor.load_state_dict(ckpt["target_actor"])
+        self.target_critic.load_state_dict(ckpt["target_critic"])
+        self.actor_opt.load_state_dict(ckpt["actor_opt"])
+        self.critic_opt.load_state_dict(ckpt["critic_opt"])
+
+        sn = ckpt["state_norm"]
+        # 直接恢复 state_norm 内部统计量
+        self.state_norm.count = int(sn["count"])
+        self.state_norm.mean = np.array(sn["mean"], dtype=np.float64)
+        self.state_norm.m2 = np.array(sn["m2"], dtype=np.float64)
+
+        # restore replay buffer
+        if "replay" in ckpt and ckpt["replay"] is not None:
+            self.buffer.load_state_dict(ckpt["replay"])

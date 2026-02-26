@@ -15,7 +15,7 @@ root_dir = current_dir.parent
 sys.path.append(str(root_dir))
 
 from src.envs.liionpack_spme_pack_env import build_pack_env
-from src.rl.actor_critic_ddpg import DDPGAgent, DDPGConfig
+from src.rl.agent_factory import build_agent_from_config
 from src.utils.config import load_config
 from src.utils.seeds import set_global_seed
 
@@ -106,18 +106,12 @@ def main() -> None:
 
     # 3. 初始化 Agent (结构必须与训练时一致)
     print("Initializing Agent...")
-    rl_cfg = DDPGConfig(
-        gamma=config["rl"]["gamma"],
-        actor_lr=config["rl"]["actor_lr"],
-        critic_lr=config["rl"]["critic_lr"],
-        tau=config["rl"]["tau"],
-        batch_size=config["rl"]["batch_size"],
-        buffer_size=config["rl"]["buffer_size"],
-        action_low=config["rl"]["action_low"],
-        action_high=config["rl"]["action_high"],
-    )
     # 注意：action_dim 这里硬编码为 1，与你训练脚本一致
-    agent = DDPGAgent(state_dim=env.observation_space.shape[0], action_dim=1, config=rl_cfg)
+    agent = build_agent_from_config(
+        state_dim=env.observation_space.shape[0],
+        action_dim=1,
+        rl_config=config["rl"],
+    )
 
     # 4. 加载权重
     policy_path = Path(args.policy)
@@ -125,24 +119,29 @@ def main() -> None:
         raise FileNotFoundError(f"Policy file not found: {policy_path}")
     
     print(f"Loading policy weights from {policy_path}...")
-    checkpoint = torch.load(policy_path, map_location=DEVICE)
+    try:
+        agent.load(str(policy_path), map_location=str(DEVICE))
+        print("✅ Policy and Normalizer loaded successfully.")
+    except Exception as e:
+        print(f"❌ Failed to load policy: {e}")
+    # checkpoint = torch.load(policy_path, map_location=DEVICE, weights_only=False)
 
-    # [修改] 兼容加载逻辑
-    if isinstance(checkpoint, dict) and "actor" in checkpoint:
-        # A. 加载神经网络权重
-        agent.actor.load_state_dict(checkpoint["actor"])
-        print("✅ Actor weights loaded.")
+    # # # [修改] 兼容加载逻辑
+    # if isinstance(checkpoint, dict) and "actor" in checkpoint:
+    #     # A. 加载神经网络权重
+    #     agent.actor.load_state_dict(checkpoint["actor"])
+    #     print("✅ Actor weights loaded.")
         
-        # B. 加载归一化统计量 (关键修复)
-        if "state_norm" in checkpoint:
-            agent.state_norm = checkpoint["state_norm"]
-            print(f"✅ Normalizer loaded. (Count: {agent.state_norm.count})")
-        else:
-            print("❌ WARNING: Checkpoint 中没有 state_norm！Agent 可能会因为输入数值过大而失效 (输出0A)。")
-    else:
-        # 兼容旧格式 (如果有旧模型还想跑)
-        agent.actor.load_state_dict(checkpoint)
-        print("⚠️ Loaded legacy state_dict only. Normalizer missing!")
+    #     # B. 加载归一化统计量 (关键修复)
+    #     if "state_norm" in checkpoint:
+    #         agent.state_norm = checkpoint["state_norm"]
+    #         # print(f"✅ Normalizer loaded. (Count: {agent.state_norm.count})")
+    #     else:
+    #         print("❌ WARNING: Checkpoint 中没有 state_norm！Agent 可能会因为输入数值过大而失效 (输出0A)。")
+    # else:
+    #     # 兼容旧格式 (如果有旧模型还想跑)
+    #     agent.actor.load_state_dict(checkpoint)
+    #     print("⚠️ Loaded legacy state_dict only. Normalizer missing!")
 
     agent.actor.eval() # 切换到评估模式
 

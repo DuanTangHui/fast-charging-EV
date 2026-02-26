@@ -28,5 +28,26 @@ class ReplayBuffer:
             np.array(dones, dtype=np.float32),
         )
 
+    def state_dict(self) -> dict:
+        # 将 deque 中的数据序列化成 list，里面每项是 (s, a, r, s_next, done)
+        items = list(self.buffer)
+        # 直接返回 list（其中 np.ndarray 本身可被 torch.save 序列化）
+        return {
+            "capacity": self.capacity,
+            "items": items,
+        }
+
+    def load_state_dict(self, state: dict) -> None:
+        self.capacity = int(state["capacity"])
+        self.buffer = deque(maxlen=self.capacity)
+        for (s, a, r, s_next, done) in state["items"]:
+            # 确保类型正确（避免 pickle/torch load 后变成 list）
+            s = np.asarray(s)
+            a = np.asarray(a)
+            s_next = np.asarray(s_next)
+            r = float(r)
+            done = bool(done)
+            self.buffer.append((s, a, r, s_next, done))
+
     def __len__(self) -> int:
         return len(self.buffer)
