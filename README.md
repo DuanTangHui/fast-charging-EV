@@ -168,6 +168,32 @@ python scripts/train_adaptive_cycles.py --config configs/pack_3p6s_spme_with_soh
 2) 检查 `rl.ppo` 参数
 3) 同上运行训练脚本
 
+
+### 6.4 静态代理模型有效性实验（交叉验证 + 完整充电过程对比）
+
+```bash
+python scripts/experiment_static_surrogate_validity.py \
+  --dataset dataset.csv \
+  --config configs/pack_3p6s_spme.yaml \
+  --agent-ckpt runs/cycle0/agent_ckpt.pt \
+  --surrogate-ckpt runs/cycle0/static_surrogate.pt \
+  --k-folds 5 \
+  --max-steps 720 \
+  --soc-stop 0.8 \
+  --output-dir runs/static_surrogate_validity_real
+```
+
+该实验严格使用：
+- 真实物理环境 `liionpack + PyBaMM`
+- 同一个已训练 RL 智能体 `runs/cycle0/agent_ckpt.pt`
+- 已训练静态代理 `runs/cycle0/static_surrogate.pt`
+
+输出包括：
+- `cv_metrics.csv` / `cv_metrics.png`：R²、MSE、MAE 的 5 折结果
+- `full_rollout_compare.png`：单次完整充电过程对比图（电流/电压/SOC/温度）
+- `efficiency_compare.png`：真实环境与静态代理的单回合耗时对比
+- `summary.txt`：指标与效率汇总
+
 ---
 
 ## 7. 输出文件说明
