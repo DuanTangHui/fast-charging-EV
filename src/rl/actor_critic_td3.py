@@ -132,7 +132,7 @@ class TD3Agent:
         torch.save(ckpt, path)
 
     def load(self, path: str, map_location: str | None = "cpu") -> None:
-        ckpt = torch.load(path, map_location=map_location)
+        ckpt = torch.load(path, map_location=map_location, weights_only=False)
         self.actor.load_state_dict(ckpt["actor"])
         self.actor_target.load_state_dict(ckpt["actor_target"])
         self.critic1.load_state_dict(ckpt["critic1"])
