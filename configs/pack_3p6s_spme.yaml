@@ -19,6 +19,9 @@ env:
   observation: 
     include_std: true #包含电池单体电压和温度的标准差->考虑电池单体间的差异
   htc: 100.0
+  sei_resistance_init: 0.0
+  sei_resistance_per_cycle: 0.0005
+  contact_resistance_param: "Contact resistance [Ohm]"
   # ===== reset 随机性 =====
   soc_init_low: 0.2
   soc_init_high: 0.3
@@ -69,10 +72,14 @@ trainer:
     surrogate_epochs: 25
     policy_epochs: 300
   adaptive:
-    cycles: 2
+    cycles: 1
     real_episodes_per_cycle: 30
     surrogate_epochs: 20
     policy_epochs: 100
+    virtual_episodes_per_cycle: 270
+    
+aging:
+  stages: 100
 
 soh_prior:
   enabled: false

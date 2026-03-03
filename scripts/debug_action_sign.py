@@ -30,5 +30,17 @@ from pathlib import Path
 #     print(f"I={I:+.2f}A -> Vcell_max={info['V_cell_max']:.4f}, Vcell_min={info['V_cell_min']:.4f}, V_pack={info.get('V_pack')}")
 import liionpack as lp  # type: ignore  # noqa: F401
 import pybamm
-sim = pybamm.ParameterValues("Chen2020")
-print(sim)
+# sim = pybamm.ParameterValues("Chen2020")
+# print(sim)
+import pybamm
+
+# 1. 加载你的参数集
+param = pybamm.ParameterValues("Chen2020")
+
+# 2. 搜索所有名字里带 "resistance" 的参数
+print("=== 包含 resistance 的参数 ===")
+param.search("resistance")
+
+# 3. 搜索所有名字里带 "SEI" 的参数
+print("\n=== 包含 SEI 的参数 ===")
+param.search("SEI")

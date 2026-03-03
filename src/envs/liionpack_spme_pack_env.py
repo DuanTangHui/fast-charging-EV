@@ -92,7 +92,9 @@ class LiionpackSPMEPackEnv(BasePackEnv):
         ocv_init: float = 4.0,
         nproc: int = 1,
         htc: float = 10.0,
-
+        sei_resistance_init: float = 0.0,
+        sei_resistance_per_cycle: float = 5e-4,
+        contact_resistance_param: str = "Contact resistance [Ohm]",
         # ===== 新增 =====
         soc_init_low: float = 0.2,
         soc_init_high: float = 0.3,
@@ -128,6 +130,10 @@ class LiionpackSPMEPackEnv(BasePackEnv):
         )
         # 加载chen2020参数集
         self._parameter_values = pybamm.ParameterValues(str(parameter_set))
+        self._sei_resistance_init = float(sei_resistance_init)
+        self._sei_resistance_per_cycle = float(sei_resistance_per_cycle)
+        self._contact_resistance_param = str(contact_resistance_param)
+        self._aging_stage: int = 0
         # 定义步长
         period_s = int(round(self.dt))
         if period_s <= 0:
@@ -161,7 +167,25 @@ class LiionpackSPMEPackEnv(BasePackEnv):
 
     def set_aging(self, aging: AgingParams) -> None:
         self._aging = aging
+    
+    def set_aging_stage(self, stage: int) -> None:
+        self._aging_stage = max(0, int(stage))
 
+    def _parameter_values_with_aging(self) -> pybamm.ParameterValues:
+        """按老化阶段注入 Contact resistance，确保影响单体热-电状态。"""
+        param_values = self._parameter_values.copy()
+        contact_resistance = self._sei_resistance_init + self._sei_resistance_per_cycle * self._aging_stage
+        try:
+            param_values.update(
+                {self._contact_resistance_param: float(contact_resistance)},
+                check_already_exists=True,
+            )
+        except Exception:
+            warnings.warn(
+                f"未找到参数 {self._contact_resistance_param!r}，跳过 Contact resistance 老化注入。",
+                RuntimeWarning,
+            )
+        return param_values
     # ============== step_output 解析工具 ==============
     # 将liionpack输出转换为cell向量 ： (T,n_cells)、(T,) --> (n_cells,)  
     def _extract_cell_vector(self, arr: Any, *, name: str) -> np.ndarray:
@@ -235,7 +259,7 @@ class LiionpackSPMEPackEnv(BasePackEnv):
         self._rm.solve(
             netlist=self._netlist,
             sim_func=self._sim_func,
-            parameter_values=self._parameter_values,
+            parameter_values=self._parameter_values_with_aging(),
             experiment=self._experiment,
             output_variables=self._requested_outputs,
             inputs=self._lp_inputs,
@@ -527,4 +551,7 @@ def build_pack_env(config: Dict[str, Any]) -> LiionpackSPMEPackEnv:
         soc_init_low=float(config.get("soc_init_low", 0.2)),
         soc_init_high=float(config.get("soc_init_high", 0.3)),
         soc_sigma_reset=float(config.get("soc_sigma_reset", 0.01)),
+        sei_resistance_init=float(config.get("sei_resistance_init", 0.0)),
+        sei_resistance_per_cycle=float(config.get("sei_resistance_per_cycle", 5e-4)),
+        contact_resistance_param=str(config.get("contact_resistance_param", "Contact resistance [Ohm]")),
     )
