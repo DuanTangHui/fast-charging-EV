@@ -3,3 +3,5 @@ pyyaml
 gymnasium
 matplotlib
 torch
+pybamm
+liionpack

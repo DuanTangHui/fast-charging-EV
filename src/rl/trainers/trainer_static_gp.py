@@ -271,6 +271,27 @@ def save_transitions_to_csv(
 
     print(f"[OK] Saved {len(transitions)} transitions to: {filepath}")
 
+def save_transitions_with_episode_to_csv(
+    transitions: List[Tuple[np.ndarray, np.ndarray, np.ndarray]],
+    episode_ids: List[int],
+    filepath: str,
+) -> None:
+    if len(transitions) != len(episode_ids):
+        raise ValueError("transitions and episode_ids length mismatch")
+
+    state_cols = [f"s_{i}" for i in range(len(transitions[0][0]))]
+    action_cols = ["action"]
+    delta_cols = [f"d_{i}" for i in range(len(transitions[0][2]))]
+    header = ["episode"] + state_cols + action_cols + delta_cols
+
+    with open(filepath, mode="w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(header)
+        for ep, (state, action, delta) in zip(episode_ids, transitions):
+            row = [int(ep)] + list(np.asarray(state).reshape(-1)) + list(np.asarray(action).reshape(-1)) + list(np.asarray(delta).reshape(-1))
+            writer.writerow(row)
+
+    print(f"[OK] Saved {len(transitions)} transitions with episode ids to: {filepath}")
 @dataclass
 class Cycle0Config:
     """Configuration for cycle0 training."""
@@ -336,12 +357,12 @@ def collect_real_data(
     reward_cfg: PaperRewardConfig,
     agent: Any,
     config: Cycle0Config,
-) -> List[tuple[np.ndarray, np.ndarray, np.ndarray]]:
+) ->  Tuple[List[tuple[np.ndarray, np.ndarray, np.ndarray]], List[int]]:
     # 1.准备工作
     low = float(agent.config.action_low)   # -30
     high = float(agent.config.action_high) # 0
     transitions: List[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
-
+    transition_episode_ids: List[int] = []
     # 软约束参数
     v_soft = float(getattr(config, "v_soft_max", env.v_max - 0.03))  # 比硬约束低一点，比如 4.17
     t_soft = float(getattr(config, "t_soft_max", env.t_max - 1.5))   # 比硬约束低一点，比如 318.5K
@@ -478,7 +499,7 @@ def collect_real_data(
             final_delta = state[:6] - start_state[:6]
             # 存入 dataset 的是：在 start_state 下，执行 action，导致了 final_delta 的变化
             transitions.append((start_state.copy(), action_to_exec.copy(), final_delta.copy()))
-
+            transition_episode_ids.append(ep + 1)
             ep_reward += accumulated_reward
         # 打印日志
         if (ep + 1) % 5 == 0:
@@ -490,7 +511,7 @@ def collect_real_data(
     if _is_on_policy_agent(agent) and _agent_ready_to_update(agent):
         agent.update()
     agent.save(str("runs//cycle0//policy_start.pt"))
-    return transitions
+    return transitions,  transition_episode_ids
 
 def obs_from_info(info: dict) -> np.ndarray:
     return np.array(
@@ -593,9 +614,11 @@ def train_cycle0(
     
     """Run Cycle0 training pipeline."""
     # 1) 真实环境采集
-    transitions = collect_real_data(env, reward_cfg, agent, config)
+    # transitions = collect_real_data(env, reward_cfg, agent, config)
+    transitions, transition_episode_ids = collect_real_data(env, reward_cfg, agent, config)
     verify_dataset_coverage(transitions)
     save_transitions_to_csv(transitions, "dataset.csv")
+    save_transitions_with_episode_to_csv(transitions, transition_episode_ids, "dataset_with_episode.csv")
 
     # actions = np.array([a[0] for _, a, _ in transitions], dtype=float)
     # print("Action stats: mean", actions.mean(), "std", actions.std(), "min", actions.min(), "max", actions.max())
