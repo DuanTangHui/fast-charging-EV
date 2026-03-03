@@ -299,8 +299,8 @@ class Cycle0Config:
     real_episodes: int  # 跑真实环境，收集 (s, a, Δs)
     surrogate_epochs: int # 用这些数据训练静态代理模型的 epoch 数
     policy_epochs: int #用 surrogate 做 rollout，产生 “伪经验” 来训练 RL policy（DDPG）
-    policy_rollouts_per_epoch: int = 3  # 每个 epoch 用 surrogate rollout 的条数
-    updates_per_epoch: int = 50  # 每个 epoch 更新 policy 的次数
+    policy_rollouts_per_epoch: int = 1  # 每个 epoch 用 surrogate rollout 的条数
+    updates_per_epoch: int = 5  # 每个 epoch 更新 policy 的次数
     plot_interval: int = 1  # 每隔多少个 epoch 保存一次轨迹图（1=每次）
     # ====== collect_real_data 探索参数 ======
     eps_random_start: float = 0.85     # 你的环境很容易撞 Vmax，随机比例建议更高
@@ -626,7 +626,7 @@ def train_cycle0(
     # transitions = load_transitions_from_csv(csv_path)
    
 
-    # ckpt_path = "C:\\Users\\85721\\Desktop\\fast-charging-EV\\runs\\cycle0\\policy_start_td3.pt"
+    # ckpt_path = "C:\\Users\\85721\\Desktop\\fast-charging-EV\\runs\\cycle0\\policy_start.pt"
     # agent.load(str(ckpt_path))
     # 2) 静态代理模型训练
     dataset = build_dataset(transitions)
@@ -790,6 +790,11 @@ def train_cycle0(
 
                 agent.observe(s, a, r, s_next, done)
 
+                if (not _is_on_policy_agent(agent)) and _agent_ready_to_update(agent):
+                    loss_a, loss_c = agent.update()
+                    epoch_a_loss.append(loss_a)
+                    epoch_c_loss.append(loss_c)
+
                 # --- 统计 actions 分布 ---
                 total_cnt += 1
                 if abs(a_val) < 1e-8:
@@ -812,14 +817,14 @@ def train_cycle0(
 
         # --- 【修改点 3】: 更新并记录 Loss ---
         # 确保 Agent 在每个 epoch 结束时进行多次更新
-        for _ in range(config.updates_per_epoch):
-            # 只有当 buffer 够大时才 update
-            if (not _is_on_policy_agent(agent)) and _agent_ready_to_update(agent):
-                # 假设 update 返回 (actor_loss, critic_loss)
-                # 如果你的 update 没有返回值，需要去修改 DDPGAgent.update
-                loss_a, loss_c = agent.update()
-                epoch_a_loss.append(loss_a)
-                epoch_c_loss.append(loss_c)
+        # for _ in range(config.updates_per_epoch):
+        #     # 只有当 buffer 够大时才 update
+        #     if (not _is_on_policy_agent(agent)) and _agent_ready_to_update(agent):
+        #         # 假设 update 返回 (actor_loss, critic_loss)
+        #         # 如果你的 update 没有返回值，需要去修改 DDPGAgent.update
+        #         loss_a, loss_c = agent.update()
+        #         epoch_a_loss.append(loss_a)
+        #         epoch_c_loss.append(loss_c)
         
         # 打印平均 Loss
         if epoch_a_loss:
