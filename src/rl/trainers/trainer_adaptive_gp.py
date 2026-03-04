@@ -58,13 +58,12 @@ def _plot_model_comparison(
         return np.array([a], dtype=np.float32)
 
     # 固定种子拿同一起点
-    state0, _ = env.reset(seed=seed)
+    state0, info0 = env.reset(seed=seed)
 
     # 真实环境轨迹
-    infos_real: List[Dict[str, float]] = []
+    infos_real: List[Dict[str, float]] = [info0]
     state = state0.copy()
-    _, info0 = env.reset(seed=seed)
-    infos_real.append(info0)
+
     done = False
     while not done:
         a = policy_eval(state)
@@ -122,7 +121,8 @@ def _plot_model_comparison(
         if idx == 0:
             ax.legend(loc="best")
     axes[-1].set_xlabel("Time (s)")
-    plt.tight_layout()
+    plt.suptitle(f"stage={infos_real[0].get('aging_stage', 'n/a')}, Ri_netlist={infos_real[0].get('netlist_ri_ohm', float('nan')):.6f}Ω, dR={infos_real[0].get('contact_resistance_ohm', float('nan')):.6f}Ω")
+    plt.tight_layout(rect=[0, 0, 1, 0.97])
     plt.savefig(save_path, dpi=150)
     plt.close(fig)
 

@@ -118,22 +118,29 @@ class LiionpackSPMEPackEnv(BasePackEnv):
         # 创建求解管理器器
         self._rm = lp.CasadiManager()
         self._nproc = int(nproc) # 可用cpu
-        # 构建 3P6S 的电路拓扑 netlist
+        # 基础电路参数（Ri 仅作为固定基线；老化不再通过 netlist/Contact 参数注入）
+        self._Rb = float(Rb)
+        self._Rc = float(Rc)
+        self._Ri_init = float(Ri_init)
+        self._ocv_init = float(ocv_init)
+        # 兼容历史命名：使用 sei_* 配置作为手动极化压降注入的每阶段增量
+        self._sei_resistance_init = float(sei_resistance_init)
+        self._sei_resistance_per_cycle = float(sei_resistance_per_cycle)
+        self._contact_resistance_param = str(contact_resistance_param)  # legacy: 当前未用于注入
+        self._aging_stage: int = 0
+
         self._netlist = lp.setup_circuit(
             Np=self.pack_cells_p,
             Ns=self.pack_cells_s,
-            Rb=float(Rb),
-            Rc=float(Rc),
-            Ri=float(Ri_init),
-            V=float(ocv_init),
+            Rb=self._Rb,
+            Rc=self._Rc,
+            Ri=self._Ri_init,
+            V=self._ocv_init,
             I=0.0,
         )
         # 加载chen2020参数集
         self._parameter_values = pybamm.ParameterValues(str(parameter_set))
-        self._sei_resistance_init = float(sei_resistance_init)
-        self._sei_resistance_per_cycle = float(sei_resistance_per_cycle)
-        self._contact_resistance_param = str(contact_resistance_param)
-        self._aging_stage: int = 0
+       
         # 定义步长
         period_s = int(round(self.dt))
         if period_s <= 0:
@@ -170,22 +177,14 @@ class LiionpackSPMEPackEnv(BasePackEnv):
     
     def set_aging_stage(self, stage: int) -> None:
         self._aging_stage = max(0, int(stage))
-
+    
+    def _aged_contact_resistance(self) -> float:
+        """历史配置项对应的“每阶段增量电阻”标量。"""
+        return float(self._sei_resistance_init + self._sei_resistance_per_cycle * self._aging_stage)
+    
     def _parameter_values_with_aging(self) -> pybamm.ParameterValues:
-        """按老化阶段注入 Contact resistance，确保影响单体热-电状态。"""
-        param_values = self._parameter_values.copy()
-        contact_resistance = self._sei_resistance_init + self._sei_resistance_per_cycle * self._aging_stage
-        try:
-            param_values.update(
-                {self._contact_resistance_param: float(contact_resistance)},
-                check_already_exists=True,
-            )
-        except Exception:
-            warnings.warn(
-                f"未找到参数 {self._contact_resistance_param!r}，跳过 Contact resistance 老化注入。",
-                RuntimeWarning,
-            )
-        return param_values
+       
+        return self._parameter_values.copy()
     # ============== step_output 解析工具 ==============
     # 将liionpack输出转换为cell向量 ： (T,n_cells)、(T,) --> (n_cells,)  
     def _extract_cell_vector(self, arr: Any, *, name: str) -> np.ndarray:
@@ -280,6 +279,13 @@ class LiionpackSPMEPackEnv(BasePackEnv):
             self._C_cell_Ah = float(self._parameter_values["Nominal cell capacity [A.h]"])
         except Exception:
             self._C_cell_Ah = 3.0
+
+    def _apply_aging_polarization_drop(self, v_cells_pure: np.ndarray, i_cells: np.ndarray) -> np.ndarray:
+        """手动注入老化极化压降：v_cells = v_cells_pure - i_cells * r_aging。"""
+        r_aging = self._aged_contact_resistance()
+        if r_aging <= 0.0:
+            return np.asarray(v_cells_pure, dtype=float)
+        return np.asarray(v_cells_pure, dtype=float) - np.asarray(i_cells, dtype=float) * float(r_aging)
           
     def _lp_do_step(self, current: float) -> Dict[str, Any]:
         """执行 liionpack 一步：写 protocol 并推进 _step。"""
@@ -319,7 +325,9 @@ class LiionpackSPMEPackEnv(BasePackEnv):
         so = self._rm.step_output()
 
         # 从 step_output 读取真实输出
-        v_cells = np.asarray(so["Terminal voltage [V]"][-1, :], dtype=float)
+        v_cells_pure = np.asarray(so["Terminal voltage [V]"][-1, :], dtype=float)
+        i_cells_reset = self._extract_cell_vector(so["Cell current [A]"], name="Cell current [A]")
+        v_cells = self._apply_aging_polarization_drop(v_cells_pure, i_cells_reset)
         t_cells = np.asarray(so["Volume-averaged cell temperature [K]"][-1, :], dtype=float)
         v_pack = self._extract_scalar_last(so["Pack terminal voltage [V]"])
 
@@ -343,7 +351,7 @@ class LiionpackSPMEPackEnv(BasePackEnv):
             t_cells=t_cells,
             v_pack=v_pack,
             so=so,
-            i_cells=None,
+            i_cells=i_cells_reset,
             violation=False,
             reason="reset",
             extra={"vlims_ok": True, "lp_step": 0},
@@ -365,13 +373,13 @@ class LiionpackSPMEPackEnv(BasePackEnv):
         # 真实输出
         # 真实执行的 pack 电流（环境状态的一部分）
         I_pack_true = self._extract_scalar_last(so["Pack current [A]"])
-        v_cells = np.asarray(so["Terminal voltage [V]"][-1, :], dtype=float)
+        v_cells_pure = np.asarray(so["Terminal voltage [V]"][-1, :], dtype=float)
         t_cells = np.asarray(so["Volume-averaged cell temperature [K]"][-1, :], dtype=float)
         v_pack = self._extract_scalar_last(so["Pack terminal voltage [V]"])
 
         # cell current（用于 SOC proxy）
         i_cells = self._extract_cell_vector(so["Cell current [A]"], name="Cell current [A]")
-
+        v_cells = self._apply_aging_polarization_drop(v_cells_pure, i_cells)
         # SOC proxy 更新
         soc_prev = self._state.soc
         soc, soc_pack = self._update_soc_by_cell_currents(
@@ -483,7 +491,10 @@ class LiionpackSPMEPackEnv(BasePackEnv):
 
         info: Dict[str, Any] = {
             "t": float(t),
-
+            "aging_stage": int(self._aging_stage),
+            "contact_resistance_ohm": float(self._aged_contact_resistance()),
+            "netlist_ri_ohm": float(self._Ri_init),
+            "manual_polarization_drop_enabled": bool(self._aged_contact_resistance() > 0.0),
             # 动作 setpoint
             "I": float(current),
             "I_prev": float(prev_i),
