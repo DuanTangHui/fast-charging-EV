@@ -75,7 +75,7 @@ trainer:
     real_episodes_per_cycle: 30
     surrogate_epochs: 20
     policy_epochs: 100
-    virtual_episodes_per_cycle: 270
+    virtual_episodes_per_cycle: 100
     # NEW (建议显式写出来)
     updates_per_virtual_episode: 50
     noise_sigma_start: 2.0

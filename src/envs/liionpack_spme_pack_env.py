@@ -99,6 +99,8 @@ class LiionpackSPMEPackEnv(BasePackEnv):
         soc_init_low: float = 0.2,
         soc_init_high: float = 0.3,
         soc_sigma_reset: float = 0.01,
+        reset_retries: int = 3,
+        min_solver_resistance_ohm: float = 1e-5,
     ) -> None:
         super().__init__(dt=dt, max_steps=max_steps, v_max=v_max, t_max=t_max)
 
@@ -114,16 +116,25 @@ class LiionpackSPMEPackEnv(BasePackEnv):
         self._soc_init_low = float(soc_init_low)
         self._soc_init_high = float(soc_init_high)
         self._soc_sigma_reset = float(soc_sigma_reset)
+        self._reset_retries = max(1, int(reset_retries))
         # ---------- liionpack 内部对象 ----------
         # 创建求解管理器器
         self._rm = lp.CasadiManager()
         self._nproc = int(nproc) # 可用cpu
         # 基础电路参数（Ri 仅作为固定基线；老化不再通过 netlist/Contact 参数注入）
-        self._Rb = float(Rb)
-        self._Rc = float(Rc)
-        self._Ri_init = float(Ri_init)
+        self._min_solver_resistance_ohm = max(1e-8, float(min_solver_resistance_ohm))
+        self._Rb = max(float(Rb), self._min_solver_resistance_ohm)
+        self._Rc = max(float(Rc), self._min_solver_resistance_ohm)
+        self._Ri_init = max(float(Ri_init), self._min_solver_resistance_ohm)
         self._ocv_init = float(ocv_init)
         # 兼容历史命名：使用 sei_* 配置作为手动极化压降注入的每阶段增量
+        if (self._Rb != float(Rb)) or (self._Rc != float(Rc)) or (self._Ri_init != float(Ri_init)):
+            print(
+                "[WARN] 检测到过小/非物理电阻，已为求解稳定性做下限钳制:",
+                f"Rb {float(Rb):.3e}->{self._Rb:.3e},",
+                f"Rc {float(Rc):.3e}->{self._Rc:.3e},",
+                f"Ri {float(Ri_init):.3e}->{self._Ri_init:.3e}",
+            )
         self._sei_resistance_init = float(sei_resistance_init)
         self._sei_resistance_per_cycle = float(sei_resistance_per_cycle)
         self._contact_resistance_param = str(contact_resistance_param)  # legacy: 当前未用于注入
@@ -185,6 +196,11 @@ class LiionpackSPMEPackEnv(BasePackEnv):
     def _parameter_values_with_aging(self) -> pybamm.ParameterValues:
        
         return self._parameter_values.copy()
+    
+    def _recreate_solver_manager(self) -> None:
+        """重建 CasadiManager，避免单次失败后内部状态污染后续 reset。"""
+        self._rm = lp.CasadiManager()
+
     # ============== step_output 解析工具 ==============
     # 将liionpack输出转换为cell向量 ： (T,n_cells)、(T,) --> (n_cells,)  
     def _extract_cell_vector(self, arr: Any, *, name: str) -> np.ndarray:
@@ -309,20 +325,39 @@ class LiionpackSPMEPackEnv(BasePackEnv):
         low = options.get("soc_low", self._soc_init_low)
         high = options.get("soc_high", self._soc_init_high)
         
-        # 确保数据类型正确
+        # reset 阶段允许有限次重试：常见失败是 t=0 初始化不可解
+        # （CV_FIRST_RHSFUNC_ERR / singular matrix）。
+        so = None
         soc_mean = float(self._rng.uniform(low, high))
+        last_reset_error: Exception | None = None
+        for attempt in range(self._reset_retries):
+            # 每次都重建 manager，避免失败状态污染后续尝试
+            self._recreate_solver_manager()
 
-        # soc_mean = float(self._rng.uniform(self._soc_init_low, self._soc_init_high))
-        initial_soc = soc_mean
-        self._lp_setup_on_reset(initial_soc)
+            # 前两次按配置区间采样，最后一次退化到中间值增强可解性
+            if attempt < self._reset_retries - 1:
+                soc_mean = float(self._rng.uniform(low, high))
+            else:
+                soc_mean = float(0.5 * (float(low) + float(high)))
 
-        # 预热一步（I=0），用于填充 step_output 缓冲
-        self._rm.protocol[0] = 0.0
-        self._rm.step = 0
-        _ = self._rm._step(0, updated_inputs={})
-        self._lp_step = 0
+            initial_soc = soc_mean
+            try:
+                self._lp_setup_on_reset(initial_soc)
 
-        so = self._rm.step_output()
+                # 预热一步（I=0），用于填充 step_output 缓冲
+                self._rm.protocol[0] = 0.0
+                self._rm.step = 0
+                _ = self._rm._step(0, updated_inputs={})
+                self._lp_step = 0
+
+                so = self._rm.step_output()
+                last_reset_error = None
+                break
+            except Exception as exc:  # noqa: BLE001 - 初始化阶段底层可能抛多类异常
+                last_reset_error = exc
+
+        if so is None:
+            raise RuntimeError(f"env.reset 初始化失败（重试 {self._reset_retries} 次）: {last_reset_error!r}") from last_reset_error
 
         # 从 step_output 读取真实输出
         v_cells_pure = np.asarray(so["Terminal voltage [V]"][-1, :], dtype=float)
@@ -365,11 +400,42 @@ class LiionpackSPMEPackEnv(BasePackEnv):
         # 保存上一个动作
         prev_i = float(self._state.i_prev)
         # 动作电流裁剪（例如 [-20,0]）
-        current = float(np.clip(action[0], self.action_space.low[0], self.action_space.high[0]))
-        # 执行一步
-        lp_info = self._lp_do_step(current)
-        so = self._rm.step_output()
+        # current = float(np.clip(action[0], self.action_space.low[0], self.action_space.high[0]))
+        # # 执行一步
+        # lp_info = self._lp_do_step(current)
+        # so = self._rm.step_output()
+        requested_current = float(np.clip(action[0], self.action_space.low[0], self.action_space.high[0]))
 
+        # 底层 CasADi/CVODES 可能在单步求解中抛异常。
+        # 这里不做动作降额/重试，而是直接记录并安全截断该 episode，
+        # 以避免整个训练进程中断。
+        current = requested_current
+        try:
+            lp_info = self._lp_do_step(current)
+            so = self._rm.step_output()
+        except Exception as exc:  # noqa: BLE001 - 底层求解器会抛 RuntimeError 等多种异常
+            obs = build_observation(
+                self._state.soc,
+                self._state.voltage,
+                self._state.temperature,
+                self._state.soh,
+                self._state.i_prev,
+            ).as_array()
+            info = dict(self._last_info) if self._last_info else {}
+            info.update(
+                {
+                    "t": float(self._state.t),
+                    "I": float(requested_current),
+                    "I_prev": float(prev_i),
+                    "terminated_reason": "solver_error",
+                    "solver_error_step": int(self._lp_step),
+                    "violation": True,
+                    "backend": "liionpack",
+                    "solver_error": repr(exc),
+                }
+            )
+            self._last_info = info
+            return obs, 0.0, False, True, info
         # 真实输出
         # 真实执行的 pack 电流（环境状态的一部分）
         I_pack_true = self._extract_scalar_last(so["Pack current [A]"])
@@ -562,6 +628,8 @@ def build_pack_env(config: Dict[str, Any]) -> LiionpackSPMEPackEnv:
         soc_init_low=float(config.get("soc_init_low", 0.2)),
         soc_init_high=float(config.get("soc_init_high", 0.3)),
         soc_sigma_reset=float(config.get("soc_sigma_reset", 0.01)),
+        reset_retries=int(config.get("reset_retries", 3)),
+        min_solver_resistance_ohm=float(config.get("min_solver_resistance_ohm", 1e-5)),
         sei_resistance_init=float(config.get("sei_resistance_init", 0.0)),
         sei_resistance_per_cycle=float(config.get("sei_resistance_per_cycle", 5e-4)),
         contact_resistance_param=str(config.get("contact_resistance_param", "Contact resistance [Ohm]")),

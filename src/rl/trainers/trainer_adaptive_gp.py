@@ -58,8 +58,12 @@ def _plot_model_comparison(
         return np.array([a], dtype=np.float32)
 
     # 固定种子拿同一起点
-    state0, info0 = env.reset(seed=seed)
-
+    # state0, info0 = env.reset(seed=seed)
+    try:
+        state0, info0 = env.reset(seed=seed)
+    except Exception as exc:  # noqa: BLE001 - 诊断绘图不应影响主训练
+        print("[WARN] 跳过模型对比图：env.reset 失败", repr(exc))
+        return
     # 真实环境轨迹
     infos_real: List[Dict[str, float]] = [info0]
     state = state0.copy()
@@ -67,7 +71,22 @@ def _plot_model_comparison(
     done = False
     while not done:
         a = policy_eval(state)
-        next_state, _, terminated, truncated, next_info = env.step(a)
+        # next_state, _, terminated, truncated, next_info = env.step(a)
+        try:
+            next_state, _, terminated, truncated, next_info = env.step(a)
+        except Exception as exc:  # noqa: BLE001 - 诊断绘图不应影响主训练
+            next_state = state
+            terminated = False
+            truncated = True
+            next_info = dict(infos_real[-1])
+            next_info.update(
+                {
+                    "I": float(a[0]) if np.ndim(a) > 0 else float(a),
+                    "terminated_reason": "plot_rollout_exception",
+                    "violation": True,
+                    "solver_error": repr(exc),
+                }
+            )
         infos_real.append(next_info)
         state = next_state
         done = terminated or truncated
@@ -190,14 +209,26 @@ def train_adaptive_cycles(
                     a = float(np.clip(a_det + np.random.normal(0.0, sigma_real), low, high))
                 return np.array([a], dtype=np.float32)
 
-            _, infos = rollout_env(env, policy_real, reward_cfg)
+            # _, infos = rollout_env(env, policy_real, reward_cfg)
+            _, infos = rollout_env(
+                env,
+                policy_real,
+                reward_cfg,
+                hold_steps=1,
+                reset_options={"soc_low": 0.1, "soc_high": 0.9},
+                action_low=low,
+                action_high=high,
+                use_physics_limit=True,
+            )
 
             # 用你统一后的口径构造 (s, a_t, delta6)
             # s 的第7维用 info[t]["I"]（在你的 env 里它对应“上一动作/当前状态携带的历史电流”）
             for i in range(len(infos) - 1):
                 curr = infos[i]
                 nxt = infos[i + 1]
-
+                if nxt.get("terminated_reason") in ["solver_error", "solver_nan", "plot_rollout_exception"]:
+                    print(f"[WARN] 跳过 solver_error 数据，防止污染差分模型。")
+                    continue
                 s = np.array(
                     [
                         curr["SOC_pack"],
@@ -236,6 +267,24 @@ def train_adaptive_cycles(
             delta_static6, _ = static_surrogate.predict(s, a)  # static 输出 6 维
             delta_hat6 = delta_real6 - delta_static6
             residual_transitions.append((s, a, delta_hat6))
+        
+        if len(residual_transitions) == 0:
+            print(f"[WARN] cycle {cycle}: 无有效真实转移（可能连续 reset_solver_error），跳过该 cycle。")
+            all_metrics.append(
+                {
+                    "cycle": cycle,
+                    "phase": "adaptive",
+                    "reward": -50.0,
+                    "soc_end": 0.0,
+                    "t_end": 0.0,
+                    "v_max": 0.0,
+                    "t_max": 0.0,
+                    "reward_sum": 0.0,
+                    "a_loss": 0.0,
+                    "c_loss": 0.0,
+                }
+            )
+            continue
 
         dataset_hat = build_dataset(residual_transitions)
         diff_surrogate.fit(dataset_hat, epochs=config.surrogate_epochs)
@@ -286,12 +335,11 @@ def train_adaptive_cycles(
             infos_for_plot: List[Dict] | None = None
             reward_for_plot: float = 0.0
             for rollout_idx in range(config.policy_rollouts_per_epoch):
-                if rollout_idx == 0:
+                try:
                     state0, _ = env.reset()
-                elif dataset_hat.states.shape[0] > 0:
-                    state0 = dataset_hat.states[np.random.randint(0, dataset_hat.states.shape[0])].copy()
-                else:
-                    state0, _ = env.reset()
+                except Exception as exc:  # noqa: BLE001 - 虚拟 rollout 起点采样不应中断训练
+                    print("[WARN] surrogate rollout 起点 reset 失败，使用默认状态", repr(exc))
+                    state0 = np.array([0.25, 0.0, 3.7, 0.0, 298.15, 298.15, 0.0], dtype=np.float32)
                 total_reward, infos = rollout_surrogate(
                     state=state0,
                     surrogate=combined.predict,

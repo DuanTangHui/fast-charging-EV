@@ -136,7 +136,7 @@ def reward_from_info(prev: Dict, next_info: Dict, config: PaperRewardConfig, v_l
     # 尝试获取 SOC std
     std_soc = float(next_info.get("std_SOC", next_info.get("SOC_std", 0.0)))
 
-    r,r_soc ,r_time ,r_v , r_t , r_const , r_action = compute_paper_reward(
+    r, r_soc ,r_time ,r_v , r_t , r_const, r_action = compute_paper_reward(
         soc_prev=float(prev["SOC_pack"]),
         soc_next=float(next_info["SOC_pack"]),
         v_max_next=float(next_info["V_cell_max"]),
@@ -147,5 +147,7 @@ def reward_from_info(prev: Dict, next_info: Dict, config: PaperRewardConfig, v_l
         t_limit=t_limit,
         config=config,
     )
-    
+    # 对求解器崩溃（env 内捕获）施加固定重罚，量级与过压惩罚相当
+    if str(next_info.get("terminated_reason", "")) == "solver_error":
+        r -= 50.0
     return r
