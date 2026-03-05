@@ -7,15 +7,14 @@ import csv
 import torch
 import numpy as np
 import pandas as pd
-import pybamm
-from scipy.interpolate import interp1d
+
 
 from torch import clip
 
 from ...envs.base_env import BasePackEnv
 from ...evaluation.episode_rollout import rollout_env, rollout_surrogate
 from ...evaluation.reports import summarize_episode
-from ...rewards.paper_reward import PaperRewardConfig, compute_paper_reward
+from ...rewards.paper_reward import PaperRewardConfig
 from ...surrogate.dataset import build_dataset
 from ...surrogate.gp_static import StaticSurrogate
 from ..noise import GaussianNoise
@@ -271,6 +270,27 @@ def save_transitions_to_csv(
 
     print(f"[OK] Saved {len(transitions)} transitions to: {filepath}")
 
+def save_transitions_with_episode_to_csv(
+    transitions: List[Tuple[np.ndarray, np.ndarray, np.ndarray]],
+    episode_ids: List[int],
+    filepath: str,
+) -> None:
+    if len(transitions) != len(episode_ids):
+        raise ValueError("transitions and episode_ids length mismatch")
+
+    state_cols = [f"s_{i}" for i in range(len(transitions[0][0]))]
+    action_cols = ["action"]
+    delta_cols = [f"d_{i}" for i in range(len(transitions[0][2]))]
+    header = ["episode"] + state_cols + action_cols + delta_cols
+
+    with open(filepath, mode="w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(header)
+        for ep, (state, action, delta) in zip(episode_ids, transitions):
+            row = [int(ep)] + list(np.asarray(state).reshape(-1)) + list(np.asarray(action).reshape(-1)) + list(np.asarray(delta).reshape(-1))
+            writer.writerow(row)
+
+    print(f"[OK] Saved {len(transitions)} transitions with episode ids to: {filepath}")
 @dataclass
 class Cycle0Config:
     """Configuration for cycle0 training."""
@@ -278,8 +298,8 @@ class Cycle0Config:
     real_episodes: int  # 跑真实环境，收集 (s, a, Δs)
     surrogate_epochs: int # 用这些数据训练静态代理模型的 epoch 数
     policy_epochs: int #用 surrogate 做 rollout，产生 “伪经验” 来训练 RL policy（DDPG）
-    policy_rollouts_per_epoch: int = 3  # 每个 epoch 用 surrogate rollout 的条数
-    updates_per_epoch: int = 50  # 每个 epoch 更新 policy 的次数
+    policy_rollouts_per_epoch: int = 1  # 每个 epoch 用 surrogate rollout 的条数
+    updates_per_epoch: int = 5  # 每个 epoch 更新 policy 的次数
     plot_interval: int = 1  # 每隔多少个 epoch 保存一次轨迹图（1=每次）
     # ====== collect_real_data 探索参数 ======
     eps_random_start: float = 0.85     # 你的环境很容易撞 Vmax，随机比例建议更高
@@ -293,41 +313,6 @@ class Cycle0Config:
     v_soft_max: float = 4.17   # 或 env.v_max - 0.03
     t_soft_max: float = 309.5  # 或 env.t_max - 1.5
 
-def get_chen2020_ocv_func():
-    # 1. 加载参数
-    param = pybamm.ParameterValues("Chen2020")
-
-    # 2. 从你提供的列表中锁定的准确键名
-    U_p = param["Positive electrode OCP [V]"]
-    U_n = param["Negative electrode OCP [V]"]
-
-    # 获取锂离子计量比限制 (用于定义 SOC 0% 到 100%)
-    # 如果下述四个键名报错，通常是因为 PyBaMM 版本中对极组容量限制的定义不同
-    # 你可以先尝试以下标准 Chen2020 键名：
-    try:
-        sto_n_0 = param["Lower stoichiometric limit in negative electrode"]
-        sto_n_1 = param["Upper stoichiometric limit in negative electrode"]
-        sto_p_0 = param["Upper stoichiometric limit in positive electrode"]
-        sto_p_1 = param["Lower stoichiometric limit in positive electrode"]
-    except KeyError:
-        # 如果报错，请直接手动指定 Chen2020 的典型计量比（LG M50 电池）
-        sto_n_0, sto_n_1 = 0.0279, 0.9014
-        sto_p_0, sto_p_1 = 0.9077, 0.2661
-
-    # 3. 构建 SOC 映射
-    soc_range = np.linspace(0, 1, 100)
-    ocv_values = []
-
-    for soc in soc_range:
-        curr_sto_n = sto_n_0 + soc * (sto_n_1 - sto_n_0)
-        curr_sto_p = sto_p_0 - soc * (sto_p_0 - sto_p_1)
-
-        # OCV = U_p(sto_p) - U_n(sto_n)
-        v = param.evaluate(U_p(pybamm.Scalar(curr_sto_p))) - \
-            param.evaluate(U_n(pybamm.Scalar(curr_sto_n)))
-        ocv_values.append(float(v))
-
-    return interp1d(soc_range, ocv_values, kind='linear', fill_value="extrapolate")
 """
 真实环境采样的关键逻辑 
 """
@@ -336,59 +321,14 @@ def collect_real_data(
     reward_cfg: PaperRewardConfig,
     agent: Any,
     config: Cycle0Config,
-) -> List[tuple[np.ndarray, np.ndarray, np.ndarray]]:
+) ->  Tuple[List[tuple[np.ndarray, np.ndarray, np.ndarray]], List[int]]:
     # 1.准备工作
     low = float(agent.config.action_low)   # -30
     high = float(agent.config.action_high) # 0
+
     transitions: List[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
-
-    # 软约束参数
-    v_soft = float(getattr(config, "v_soft_max", env.v_max - 0.03))  # 比硬约束低一点，比如 4.17
-    t_soft = float(getattr(config, "t_soft_max", env.t_max - 1.5))   # 比硬约束低一点，比如 318.5K
-
-    # 定义Guard：当接近边界时，把电流往 0A 拉
-    # def guard_action(action: float, info: dict) -> float:
-    #     v = float(info.get("V_cell_max", -1e9))
-    #     t = float(info.get("T_cell_max", -1e9))
-    #     viol = bool(info.get("violation", False))
-
-    #     # 已经违规：立即大幅减小电流（靠近0）
-    #     if viol:
-    #         return float(np.clip(action + 5.0, low, high))  # prev_action是负数，加5就是减小幅值
-
-    #     # 接近电压或温度软阈值：渐进减小电流
-    #     if v >= v_soft or t >= t_soft:
-    #         return float(np.clip(action + 2.0, low, high))
-
-    #     return action
-    get_ocv = get_chen2020_ocv_func()
-    def physics_limit_action(action_from_agent: float, info: dict) -> float:
-        """
-        取代旧的 guard_action，基于状态估计计算物理安全电流阈值 [cite: 231, 235]
-        """
-        soc_curr = float(info.get("SOC_cell_max", info.get("SOC_pack")))
-        v_curr = float(info.get("V_cell_max"))
-
-        # 1. 计算当前 OCV
-        u_ocv = float(get_ocv(soc_curr))
-
-        # 2. 设定物理边界：截止电压 4.2V，估算内阻 0.025 Ohm
-        v_limit = 4.2 
-        r_internal = 0.025 
-
-        # 3. 计算物理安全电流边界 I_bound (根据论文公式 6-13) [cite: 238]
-        # I_bound = (U_cut - U_ocv) / R
-        i_bound_single = max(0.0, (v_limit - u_ocv) / r_internal)
-
-        # 4. 适配 3p6s 电池组总电流 (充电为负值)
-        i_bound_pack = i_bound_single * 3.0
-        # print(f"[DEBUG] SOC={soc_curr:.4f}, OCV={u_ocv:.3f}V, I_bound_single={i_bound_single:.2f}A, I_bound_pack={i_bound_pack:.2f}A")
-
-        # 5. 动作裁剪：Agent 可以尝试物理极限内的任何电流，但禁止导致瞬时超压 [cite: 243, 272]
-        safe_action = np.clip(action_from_agent, -i_bound_pack, 0.0)
-
-        return float(safe_action)
-    
+    transition_episode_ids: List[int] = []
+   
     print(f"开始 Model-Free 预训练 (Warm-up) 共 {config.real_episodes} 回合...")
 
     for ep in range(config.real_episodes):
@@ -398,99 +338,61 @@ def collect_real_data(
         sigma = ((1 - frac) * config.noise_sigma_start + frac * config.noise_sigma_end) * (high - low)
         noise = GaussianNoise(sigma=float(sigma))
 
-        # state, info = env.reset()
-        state, info = env.reset(options={"soc_low": 0.1, "soc_high": 0.9})
-        done = False
-
-        # 统计本回合奖励
-        ep_reward = 0.0
-        current_soc = float(info.get("SOC_pack", state[0]))
-        while not done:
-            # --- A. 选择动作 ---
+        def policy_real(state: np.ndarray) -> np.ndarray:
             raw_action = float(agent.act(state)[0])
             if _is_on_policy_agent(agent):
-                a_noisy = raw_action
+                action = raw_action
             else:
-                a_noisy = raw_action + noise.sample()
-            a_clipped = float(np.clip(a_noisy, low, high))
-            #    B.安全守卫（用上一时刻 info）
-            safe_action = physics_limit_action(a_clipped, info)
-            safe_action = float(np.clip(safe_action, low, high))
+                action = raw_action + noise.sample()
+            return np.array([float(np.clip(action, low, high))], dtype=np.float32)
+        _, infos = rollout_env(
+            env,
+            policy_real,
+            reward_cfg,
+            hold_steps=config.hold_steps,
+            reset_options={"soc_low": 0.1, "soc_high": 0.9},
+            action_low=low,
+            action_high=high,
+            use_physics_limit=True,
+        )
 
-            # 准备执行的动作
-            action_to_exec = np.array([safe_action], dtype=np.float32)
+        ep_reward = 0.0
+        for i in range(len(infos) - 1):
+            curr = infos[i]
+            nxt = infos[i + 1]
 
-            #   C.环境交互
-            start_state = state.copy()
-            accumulated_reward = 0.0
+            start_state = obs_from_info(curr)
+            state = obs_from_info(nxt)
+            action_to_exec = np.array([float(nxt.get("I", 0.0))], dtype=np.float32)
+            accumulated_reward = float(nxt.get("reward", 0.0))
 
-            # 执行 hold steps (模拟宏观步长) (Time = t -> t + N*dt) 10s
-            for _ in range(config.hold_steps):
-                # 记录 step 前的 SOC
-                prev_soc = current_soc
+            is_violation = bool(nxt.get("violation", False))
+            done = is_violation or (i == len(infos) - 2)
 
-                next_state, _, terminated, truncated, next_info = env.step(action_to_exec)
-                
-                # 更新当前的 SOC, V, T 等信息
-                current_soc = float(next_info["SOC_pack"])
-                v_max = float(next_info["V_cell_max"])
-                t_max = float(next_info["T_cell_max"])
-                # 尝试获取 std_soc，如果没有则设为 0
-                std_soc = float(next_info.get("std_SOC", 0.0)) 
-                # 获取真实的电流
-                I_exec = float(next_info.get("I_pack_true", safe_action))
-                if abs(I_exec - safe_action) > 1e-3:
-                    print(f"[WARN] current mismatch: safe={safe_action}, exec={I_exec}")
-
-                # 手动计算这一小步的奖励
-                # 注意：这里调用你外部定义的 compute_paper_reward
-                r_step, _, _, _, _, _, _ = compute_paper_reward(
-                    soc_prev=prev_soc,
-                    soc_next=current_soc,
-                    v_max_next=v_max,
-                    t_max_next=t_max,
-                    std_soc_next=std_soc,
-                    action_current=I_exec, # 传入实际执行的电流
-                    v_limit=env.v_max,
-                    t_limit=env.t_max,
-                    config=reward_cfg 
-                )
-                # 累积奖励
-                accumulated_reward += r_step
-
-                # 状态更新
-                state = next_state
-                info = next_info
-               
-                # 如果中途挂了（过压/时间到），立即停止，保留当前的 state 用于计算 Delta
-                if terminated or truncated:
-                    done = True
-                    break
-            # --- 3. 训练 Agent ---
             # 存入的是：(0s状态, 10s动作, 10s总奖励, 10s状态)
             agent.observe(start_state, action_to_exec, accumulated_reward, state, done)
             # 只有当 buffer 数据够了才 update
             if (not _is_on_policy_agent(agent)) and _agent_ready_to_update(agent):
                 agent.update()
-            # # --- 4. 收集数据给 GP ---
-            # Delta = State(t + 50s) - State(t)
-            # 这样算出来的 温度 Delta 会比之前大 5 倍以上！
+    
             final_delta = state[:6] - start_state[:6]
+
             # 存入 dataset 的是：在 start_state 下，执行 action，导致了 final_delta 的变化
             transitions.append((start_state.copy(), action_to_exec.copy(), final_delta.copy()))
-
+            transition_episode_ids.append(ep + 1)
             ep_reward += accumulated_reward
         # 打印日志
-        if (ep + 1) % 5 == 0:
+        if (ep + 1) % 5 == 0 and infos:
+            last_info = infos[-1]
             print(
                 f"[Warmup] Ep {ep+1} | R: {ep_reward:.2f} | "
-                f"SOC: {info['SOC_pack']:.4f} | Vmax: {info['V_cell_max']:.4f} | "
+                f"SOC: {last_info['SOC_pack']:.4f} | Vmax: {last_info['V_cell_max']:.4f} | "
                 f"Buf: {_agent_buffer_len(agent)}"
             )
     if _is_on_policy_agent(agent) and _agent_ready_to_update(agent):
         agent.update()
     agent.save(str("runs//cycle0//policy_start.pt"))
-    return transitions
+    return transitions, transition_episode_ids
 
 def obs_from_info(info: dict) -> np.ndarray:
     return np.array(
@@ -593,9 +495,11 @@ def train_cycle0(
     
     """Run Cycle0 training pipeline."""
     # 1) 真实环境采集
-    transitions = collect_real_data(env, reward_cfg, agent, config)
+    # transitions = collect_real_data(env, reward_cfg, agent, config)
+    transitions, transition_episode_ids = collect_real_data(env, reward_cfg, agent, config)
     verify_dataset_coverage(transitions)
     save_transitions_to_csv(transitions, "dataset.csv")
+    save_transitions_with_episode_to_csv(transitions, transition_episode_ids, "dataset_with_episode.csv")
 
     # actions = np.array([a[0] for _, a, _ in transitions], dtype=float)
     # print("Action stats: mean", actions.mean(), "std", actions.std(), "min", actions.min(), "max", actions.max())
@@ -603,7 +507,7 @@ def train_cycle0(
     # transitions = load_transitions_from_csv(csv_path)
    
 
-    # ckpt_path = "C:\\Users\\85721\\Desktop\\fast-charging-EV\\runs\\cycle0\\policy_start_td3.pt"
+    # ckpt_path = "C:\\Users\\85721\\Desktop\\fast-charging-EV\\runs\\cycle0\\policy_start.pt"
     # agent.load(str(ckpt_path))
     # 2) 静态代理模型训练
     dataset = build_dataset(transitions)
@@ -767,6 +671,11 @@ def train_cycle0(
 
                 agent.observe(s, a, r, s_next, done)
 
+                if (not _is_on_policy_agent(agent)) and _agent_ready_to_update(agent):
+                    loss_a, loss_c = agent.update()
+                    epoch_a_loss.append(loss_a)
+                    epoch_c_loss.append(loss_c)
+
                 # --- 统计 actions 分布 ---
                 total_cnt += 1
                 if abs(a_val) < 1e-8:
@@ -789,14 +698,14 @@ def train_cycle0(
 
         # --- 【修改点 3】: 更新并记录 Loss ---
         # 确保 Agent 在每个 epoch 结束时进行多次更新
-        for _ in range(config.updates_per_epoch):
-            # 只有当 buffer 够大时才 update
-            if (not _is_on_policy_agent(agent)) and _agent_ready_to_update(agent):
-                # 假设 update 返回 (actor_loss, critic_loss)
-                # 如果你的 update 没有返回值，需要去修改 DDPGAgent.update
-                loss_a, loss_c = agent.update()
-                epoch_a_loss.append(loss_a)
-                epoch_c_loss.append(loss_c)
+        # for _ in range(config.updates_per_epoch):
+        #     # 只有当 buffer 够大时才 update
+        #     if (not _is_on_policy_agent(agent)) and _agent_ready_to_update(agent):
+        #         # 假设 update 返回 (actor_loss, critic_loss)
+        #         # 如果你的 update 没有返回值，需要去修改 DDPGAgent.update
+        #         loss_a, loss_c = agent.update()
+        #         epoch_a_loss.append(loss_a)
+        #         epoch_c_loss.append(loss_c)
         
         # 打印平均 Loss
         if epoch_a_loss:

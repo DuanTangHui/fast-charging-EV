@@ -3,3 +3,6 @@ pyyaml
 gymnasium
 matplotlib
 torch
+pybamm
+liionpack
+Python == 3.8.20

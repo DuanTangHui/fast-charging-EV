@@ -66,7 +66,8 @@ class EnsembleDeltaModel:
 
     def fit(self, dataset: TransitionDataset, epochs: int = 10, batch_size: int = 256) -> None:
         """Fit the ensemble on normalized data."""
-        print("Using device:", DEVICE)
+        model_device = next(self.models[0].parameters()).device
+        print("Using device:", model_device)
         # 1. 准备数据（归一化处理）
         s_norm, a_norm = dataset.normalize_sa(dataset.states, dataset.actions)
         x = np.concatenate([s_norm, a_norm], axis=-1)
@@ -78,8 +79,8 @@ class EnsembleDeltaModel:
         y = np.nan_to_num(y, nan=0.0, posinf=1e6, neginf=-1e6)
 
         # 3. 转为 Tensor
-        x_tensor = torch.tensor(x, dtype=torch.float32, device=DEVICE)
-        y_tensor = torch.tensor(y, dtype=torch.float32, device=DEVICE)
+        x_tensor = torch.tensor(x, dtype=torch.float32, device=model_device)
+        y_tensor = torch.tensor(y, dtype=torch.float32, device=model_device)
 
         num_samples = x.shape[0]
 
@@ -109,9 +110,11 @@ class EnsembleDeltaModel:
 
         s_norm, a_norm = dataset.normalize_sa(state[None, :], action[None, :])
         x = np.concatenate([s_norm, a_norm], axis=-1)
-        x_tensor = torch.tensor(x, dtype=torch.float32, device=DEVICE)
+        # x_tensor = torch.tensor(x, dtype=torch.float32, device=DEVICE)
         preds = []
         for model in self.models:
+            model_device = next(model.parameters()).device
+            x_tensor = torch.tensor(x, dtype=torch.float32, device=model_device)
             with torch.no_grad():
                 preds.append(model(x_tensor).detach().cpu().numpy()[0])
         preds_np = np.stack(preds)
