@@ -42,7 +42,7 @@ def main() -> None:
 
     static_ckpt = Path(config["logging"]["runs_dir"]) / "cycle0" / "static_surrogate.pt"
     if static_ckpt.exists():
-        static_surrogate = torch.load(static_ckpt)
+        static_surrogate = torch.load(static_ckpt, weights_only=False)
     else:
         static_surrogate = StaticSurrogate(
             input_dim=env.observation_space.shape[0] + 1,
