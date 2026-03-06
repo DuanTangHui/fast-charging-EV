@@ -3,13 +3,18 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Dict, List
+import csv
+import os
 
 import numpy as np
 import matplotlib.pyplot as plt
+import pybamm
+from scipy.interpolate import interp1d
 from ...envs.base_env import BasePackEnv
 from ...evaluation.episode_rollout import rollout_env, rollout_surrogate
 from ...evaluation.reports import summarize_episode
 from ...rewards.paper_reward import PaperRewardConfig
+from ..noise import GaussianNoise
 from ...surrogate.dataset import build_dataset
 from ...surrogate.gp_combined import CombinedSurrogate
 from ...surrogate.gp_differential import DifferentialSurrogate
@@ -21,6 +26,101 @@ from ...utils.plotting import plot_episode
 
 def _is_on_policy_agent(agent: Any) -> bool:
     return bool(getattr(agent, "is_on_policy", False))
+
+
+
+def _agent_buffer_len(agent: Any) -> int:
+    buffer_obj = getattr(agent, "buffer", None)
+    return len(buffer_obj) if buffer_obj is not None else 0
+
+
+def _agent_ready_to_update(agent: Any) -> bool:
+    batch_size = int(getattr(getattr(agent, "config", object()), "batch_size", 1))
+    return _agent_buffer_len(agent) >= batch_size
+
+
+def get_chen2020_ocv_func():
+    param = pybamm.ParameterValues("Chen2020")
+    U_p = param["Positive electrode OCP [V]"]
+    U_n = param["Negative electrode OCP [V]"]
+    try:
+        sto_n_0 = param["Lower stoichiometric limit in negative electrode"]
+        sto_n_1 = param["Upper stoichiometric limit in negative electrode"]
+        sto_p_0 = param["Upper stoichiometric limit in positive electrode"]
+        sto_p_1 = param["Lower stoichiometric limit in positive electrode"]
+    except KeyError:
+        sto_n_0, sto_n_1 = 0.0279, 0.9014
+        sto_p_0, sto_p_1 = 0.9077, 0.2661
+
+    soc_range = np.linspace(0, 1, 100)
+    ocv_values = []
+    for soc in soc_range:
+        curr_sto_n = sto_n_0 + soc * (sto_n_1 - sto_n_0)
+        curr_sto_p = sto_p_0 - soc * (sto_p_0 - sto_p_1)
+        v = param.evaluate(U_p(pybamm.Scalar(curr_sto_p))) - param.evaluate(U_n(pybamm.Scalar(curr_sto_n)))
+        ocv_values.append(float(v))
+
+    return interp1d(soc_range, ocv_values, kind="linear", fill_value="extrapolate")
+
+def save_transitions_with_episode_to_csv(
+    transitions: List[tuple[np.ndarray, np.ndarray, np.ndarray]],
+    episode_ids: List[int],
+    filepath: str,
+) -> None:
+    if not transitions:
+        return
+    if len(transitions) != len(episode_ids):
+        raise ValueError("transitions and episode_ids length mismatch")
+
+    state_cols = [f"s_{i}" for i in range(len(transitions[0][0]))]
+    action_cols = ["action"]
+    delta_cols = [f"d_{i}" for i in range(len(transitions[0][2]))]
+    header = ["episode"] + state_cols + action_cols + delta_cols
+
+    with open(filepath, mode="w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(header)
+        for ep, (state, action, delta) in zip(episode_ids, transitions):
+            row = [int(ep)] + list(np.asarray(state).reshape(-1)) + list(np.asarray(action).reshape(-1)) + list(np.asarray(delta).reshape(-1))
+            writer.writerow(row)
+
+    print(f"[OK] Saved {len(transitions)} transitions with episode ids to: {filepath}")
+
+
+def plot_transition_coverage(
+    transitions: List[tuple[np.ndarray, np.ndarray, np.ndarray]],
+    save_path: str,
+) -> None:
+    if not transitions:
+        return
+
+    soc_values = np.array([t[0][0] for t in transitions], dtype=float)
+    actions = np.array([t[1][0] for t in transitions], dtype=float)
+
+    plt.figure(figsize=(15, 6))
+    plt.subplot(1, 2, 1)
+    plt.hist(soc_values, bins=50, color="skyblue", edgecolor="black", alpha=0.7)
+    plt.axvline(0.6, color="red", linestyle="--", label="SOC=0.6")
+    plt.title("Adaptive Real Data SOC Distribution")
+    plt.xlabel("SOC")
+    plt.ylabel("Count")
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+
+    plt.subplot(1, 2, 2)
+    plt.scatter(soc_values, actions, alpha=0.4, s=15, c="darkblue")
+    plt.axvline(0.6, color="red", linestyle="--", label="SOC=0.6")
+    plt.title("Adaptive Real Data Action vs SOC")
+    plt.xlabel("SOC")
+    plt.ylabel("Action (A)")
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=150)
+    plt.close()
+    print(f"[OK] Saved transition coverage plot to: {save_path}")
+
 
 def obs_from_info(info: dict) -> np.ndarray:
     """
@@ -144,7 +244,11 @@ class AdaptiveConfig:
     # exploration noise on surrogate rollouts (absolute A)
     noise_sigma_start: float = 2.0
     noise_sigma_end: float = 0.1
-
+    hold_steps: int = 1
+    real_noise_sigma_start: float = 0.016
+    real_noise_sigma_end: float = 0.003
+    save_real_transitions_csv: bool = True
+    plot_real_transitions_coverage: bool = True
 
 def train_adaptive_cycles(
     env: BasePackEnv,
@@ -177,55 +281,59 @@ def train_adaptive_cycles(
         # (A) Collect REAL transitions (use agent policy, not random)
         # ------------------------------------------------------------
         transitions: List[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
+        
+        transition_episode_ids: List[int] = []
 
+        get_ocv = get_chen2020_ocv_func()
+
+        def physics_limit_action(action_from_agent: float, info: dict) -> float:
+            soc_curr = float(info.get("SOC_cell_max", info.get("SOC_pack")))
+            u_ocv = float(get_ocv(soc_curr))
+            v_limit = 4.2
+            r_internal = 0.025
+            i_bound_single = max(0.0, (v_limit - u_ocv) / r_internal)
+            i_bound_pack = i_bound_single * 3.0
+            safe_action = np.clip(action_from_agent, -i_bound_pack, 0.0)
+            return float(safe_action)
+        
         for ep in range(config.real_episodes_per_cycle):
-            # 真实环境探索噪声：建议比 cycle0 小一些（你也可以后续做衰减）
-            sigma_real = 0.5
+            frac = ep / max(1, config.real_episodes_per_cycle - 1)
+            sigma = ((1 - frac) * config.real_noise_sigma_start + frac * config.real_noise_sigma_end) * (high - low)
+            noise = GaussianNoise(sigma=float(sigma))
 
             def policy_real(state: np.ndarray) -> np.ndarray:
-                a_det = float(agent.act(state)[0])
-                if _is_on_policy_agent(agent):
-                    a = float(np.clip(a_det, low, high))
-                else:
-                    a = float(np.clip(a_det + np.random.normal(0.0, sigma_real), low, high))
-                return np.array([a], dtype=np.float32)
+                return np.array([float(agent.act(state)[0])], dtype=np.float32)
+                
+            _, infos = rollout_env(
+                env=env,
+                policy=policy_real,
+                reward_cfg=reward_cfg,
+                hold_steps=config.hold_steps,
+                action_low=low,
+                action_high=high,
+                apply_noise=True,
+                noise_sampler=noise.sample,
+                action_postprocess=physics_limit_action,
+                observer=agent,
+                update_agent=True,
+                ready_to_update=_agent_ready_to_update,
+                on_policy_agent=_is_on_policy_agent(agent),
+                reset_options={"soc_low": 0.1, "soc_high": 0.9},
+                collect_deltas=True,
+            )
 
-            _, infos = rollout_env(env, policy_real, reward_cfg)
+            macro_transitions = infos[0].get("macro_transitions", [])
+            transitions.extend(macro_transitions)
+            transition_episode_ids.extend([ep + 1] * len(macro_transitions))
 
-            # 用你统一后的口径构造 (s, a_t, delta6)
-            # s 的第7维用 info[t]["I"]（在你的 env 里它对应“上一动作/当前状态携带的历史电流”）
-            for i in range(len(infos) - 1):
-                curr = infos[i]
-                nxt = infos[i + 1]
-
-                s = np.array(
-                    [
-                        curr["SOC_pack"],
-                        curr.get("std_SOC", 0.0),
-                        curr["V_cell_max"],
-                        curr["dV"],
-                        curr["T_cell_max"],
-                        curr["T_cell_min"],
-                        curr["I"],
-                    ],
-                    dtype=np.float32,
-                )
-                s_next = np.array(
-                    [
-                        nxt["SOC_pack"],
-                        nxt.get("std_SOC", 0.0),
-                        nxt["V_cell_max"],
-                        nxt["dV"],
-                        nxt["T_cell_max"],
-                        nxt["T_cell_min"],
-                        nxt["I"],
-                    ],
-                    dtype=np.float32,
-                )
-
-                delta6 = s_next[:6] - s[:6]
-                a = np.array([float(nxt["I"])], dtype=np.float32)  # ✅ 当前动作 a_t
-                transitions.append((s, a, delta6))
+        if config.save_real_transitions_csv and transitions:
+            csv_path = os.path.join(run_dir, f"cycle_{cycle}_real_transitions.csv")
+            save_transitions_with_episode_to_csv(transitions, transition_episode_ids, csv_path)
+        
+        if config.plot_real_transitions_coverage and transitions:
+            plot_path = os.path.join(run_dir, f"cycle_{cycle}_real_data_coverage.png")
+            plot_transition_coverage(transitions, plot_path)
+          
 
         # ------------------------------------------------------------
         # (B) Fit DIFFERENTIAL surrogate on residual
@@ -294,7 +402,7 @@ def train_adaptive_cycles(
                     state0, _ = env.reset()
                 total_reward, infos = rollout_surrogate(
                     state=state0,
-                    surrogate=combined.predict,
+                    surrogate=static_surrogate.predict,
                     policy=policy_train,
                     horizon=env.max_steps,
                     reward_cfg=reward_cfg,
@@ -335,13 +443,13 @@ def train_adaptive_cycles(
 
                     agent.observe(s, a, r, s_next, done)
 
-                    if not _is_on_policy_agent(agent):
+                    if (not _is_on_policy_agent(agent)) and _agent_ready_to_update(agent):
                         a_loss, c_loss = agent.update()
                         if a_loss is not None:
                             actor_losses.append(float(a_loss))
                         if c_loss is not None:
                             critic_losses.append(float(c_loss))
-                if _is_on_policy_agent(agent):
+                if _is_on_policy_agent(agent) and _agent_ready_to_update(agent):
                         a_loss, c_loss = agent.update()
                         if a_loss is not None:
                             actor_losses.append(float(a_loss))

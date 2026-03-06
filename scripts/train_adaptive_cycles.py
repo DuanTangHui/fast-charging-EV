@@ -68,45 +68,6 @@ def test_aging_reasonableness(env, increment=0.0005, cycles=100, test_current=-1
     # 5) 恢复原阶段，避免影响后续流程
     env.set_aging_stage(prev_stage)
 
-def _load_agent_weights_only(agent, ckpt_file: Path) -> None:
-    """恢复网络参数 + 状态归一化统计；优化器/缓冲区保持新建状态。"""
-    ckpt = torch.load(str(ckpt_file), map_location="cpu", weights_only=False)
-
-    # TD3
-    if hasattr(agent, "actor") and "actor" in ckpt:
-        agent.actor.load_state_dict(ckpt["actor"])
-    if hasattr(agent, "actor_target") and "actor_target" in ckpt:
-        agent.actor_target.load_state_dict(ckpt["actor_target"])
-    if hasattr(agent, "critic1") and "critic1" in ckpt:
-        agent.critic1.load_state_dict(ckpt["critic1"])
-    if hasattr(agent, "critic2") and "critic2" in ckpt:
-        agent.critic2.load_state_dict(ckpt["critic2"])
-    if hasattr(agent, "critic1_target") and "critic1_target" in ckpt:
-        agent.critic1_target.load_state_dict(ckpt["critic1_target"])
-    if hasattr(agent, "critic2_target") and "critic2_target" in ckpt:
-        agent.critic2_target.load_state_dict(ckpt["critic2_target"])
-
-    # DDPG
-    if hasattr(agent, "critic") and "critic" in ckpt:
-        agent.critic.load_state_dict(ckpt["critic"])
-    if hasattr(agent, "target_actor") and "target_actor" in ckpt:
-        agent.target_actor.load_state_dict(ckpt["target_actor"])
-    if hasattr(agent, "target_critic") and "target_critic" in ckpt:
-        agent.target_critic.load_state_dict(ckpt["target_critic"])
-
-    # PPO
-    if hasattr(agent, "actor") and "actor" in ckpt:
-        agent.actor.load_state_dict(ckpt["actor"])
-    if hasattr(agent, "critic") and "critic" in ckpt:
-        agent.critic.load_state_dict(ckpt["critic"])
-
-    # 保留策略行为连续性：恢复状态归一化统计，避免新 stage 因归一化冷启动导致动作异常偏小。
-    if hasattr(agent, "state_norm") and "state_norm" in ckpt:
-        sn = ckpt["state_norm"]
-        agent.state_norm.count = int(sn["count"])
-        agent.state_norm.mean = sn["mean"]
-        agent.state_norm.m2 = sn["m2"]
-
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", required=True)
@@ -165,8 +126,11 @@ def main() -> None:
             action_dim=1,
             rl_config=config["rl"],
         )
-        _load_agent_weights_only(agent, warm_start_ckpt)
-
+        agent.load(str(warm_start_ckpt), map_location="cpu")
+        # Stage 切换后清空 replay，避免旧阶段经验污染当前阶段分布
+        if hasattr(agent, "buffer") and hasattr(agent.buffer, "buffer"):
+            agent.buffer.buffer.clear() 
+            
         diff_surrogate = DifferentialSurrogate(
             input_dim=env.observation_space.shape[0] + 1,
             output_dim=env.observation_space.shape[0] - 1,

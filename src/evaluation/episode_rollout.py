@@ -1,42 +1,108 @@
 """Episode rollout utilities for environments and surrogates."""
 from __future__ import annotations
 
-from typing import Callable, Dict, List, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 
 from ..envs.base_env import BasePackEnv
-from ..rewards.paper_reward import PaperRewardConfig, reward_from_info, compute_paper_reward
+from ..rewards.paper_reward import PaperRewardConfig, compute_paper_reward
 
 
 def rollout_env(
     env: BasePackEnv,
     policy: Callable[[np.ndarray], np.ndarray],
     reward_cfg: PaperRewardConfig,
+    hold_steps: int = 1,
+    action_low: Optional[float] = None,
+    action_high: Optional[float] = None,
+    apply_noise: bool = False,
+    noise_sampler: Optional[Callable[[], float]] = None,
+    action_postprocess: Optional[Callable[[float, Dict], float]] = None,
+    observer: Optional[Any] = None,
+    update_agent: bool = False,
+    ready_to_update: Optional[Callable[[Any], bool]] = None,
+    on_policy_agent: bool = False,
+    reset_options: Optional[Dict[str, float]] = None,
+    collect_deltas: bool = False,
 ) -> Tuple[float, List[Dict]]:
-    """Rollout in a real environment."""
-    
-    state, info = env.reset()
+    """Rollout in a real environment.
+
+    When extra knobs are provided, this function can replicate trainer_static_gp
+    warm-up semantics (noise, safety clipping, hold-steps reward recomputation,
+    delta logging, and observe/update timing).
+    """
+
+    state, info = env.reset(options=reset_options)
 
     infos: List[Dict] = [info]
     total_reward = 0.0
-    prev_info = info
+    current_soc = float(info.get("SOC_pack", state[0]))
+    low = float(action_low) if action_low is not None else None
+    high = float(action_high) if action_high is not None else None
+    transitions: List[Tuple[np.ndarray, np.ndarray, np.ndarray]] = []
     done = False
     
     while not done:
-        action = policy(state)
-        next_state, _, terminated, truncated, next_info = env.step(action)
-        
-        # 使用 reward_from_info 自动提取参数
-        reward = reward_from_info(prev_info, next_info, reward_cfg, env.v_max, env.t_max)
-        
-        next_info["reward"] = reward
-        infos.append(next_info)
-        total_reward += reward
-        state = next_state
-        prev_info = next_info
-        done = terminated or truncated
+        raw_action = float(policy(state)[0])
+        if apply_noise and (not on_policy_agent) and noise_sampler is not None:
+            raw_action += float(noise_sampler())
 
+        if low is not None and high is not None:
+            raw_action = float(np.clip(raw_action, low, high))
+
+        safe_action = raw_action
+        if action_postprocess is not None:
+            safe_action = float(action_postprocess(raw_action, info))
+            if low is not None and high is not None:
+                safe_action = float(np.clip(safe_action, low, high))
+
+        action_to_exec = np.array([safe_action], dtype=np.float32)
+        start_state = state.copy()
+        accumulated_reward = 0.0
+
+        for _ in range(hold_steps):
+            prev_soc = current_soc
+            next_state, _, terminated, truncated, next_info = env.step(action_to_exec)
+
+            current_soc = float(next_info["SOC_pack"])
+            v_max = float(next_info["V_cell_max"])
+            t_max = float(next_info["T_cell_max"])
+            std_soc = float(next_info.get("std_SOC", 0.0))
+            i_exec = float(next_info.get("I_pack_true", safe_action))
+
+            reward, _, _, _, _, _, _ = compute_paper_reward(
+                soc_prev=prev_soc,
+                soc_next=current_soc,
+                v_max_next=v_max,
+                t_max_next=t_max,
+                std_soc_next=std_soc,
+                action_current=i_exec,
+                v_limit=env.v_max,
+                t_limit=env.t_max,
+                config=reward_cfg,
+            )
+
+            next_info["reward"] = reward
+            infos.append(next_info)
+            accumulated_reward += reward
+            total_reward += reward
+            state = next_state
+            info = next_info
+
+            if terminated or truncated:
+                done = True
+                break
+
+        if observer is not None:
+            observer.observe(start_state, action_to_exec, accumulated_reward, state, done)
+            if update_agent and (not on_policy_agent):
+                if ready_to_update is None or ready_to_update(observer):
+                    observer.update()
+
+        if collect_deltas:
+            final_delta = state[:6] - start_state[:6]
+            transitions.append((start_state.copy(), action_to_exec.copy(), final_delta.copy()))
     print(
         "episode_end:",
         "steps=", len(infos)-1,
@@ -48,7 +114,8 @@ def rollout_env(
         "reason=", infos[-1].get("terminated_reason", None),
         "I_mean=", round(np.mean([i["I"] for i in infos[1:]]), 2) if len(infos) > 1 else None,
     )
-
+    if collect_deltas:
+        infos[0]["macro_transitions"] = transitions
     return total_reward, infos
 
 
