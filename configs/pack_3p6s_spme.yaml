@@ -67,12 +67,12 @@ trainer:
   cycle0:
     real_episodes: 50
     surrogate_epochs: 25
-    policy_epochs: 100
+    policy_epochs: 200
   adaptive:
     cycles: 2
     real_episodes_per_cycle: 30
     surrogate_epochs: 20
-    policy_epochs: 100
+    policy_epochs: 200
 
 soh_prior:
   enabled: false
