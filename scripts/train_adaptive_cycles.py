@@ -112,9 +112,6 @@ def main() -> None:
         if hasattr(env, "set_aging_stage"):
             env.set_aging_stage(aging_stage)
 
-        if aging_stage > 1:
-            agent.load(str(previous_agent_ckpt))
-
         diff_surrogate = DifferentialSurrogate(
             input_dim=env.observation_space.shape[0] + 1,
             output_dim=env.observation_space.shape[0] - 1,
@@ -147,6 +144,7 @@ def main() -> None:
             previous_agent_ckpt = agent_ckpt
 
         torch.save(diff_surrogate, stage_run_dir / "diff_surrogate.pt")
+        print(f"Completed adaptive cycle {aging_stage}, results saved to {stage_run_dir}")
 
 
 if __name__ == "__main__":
