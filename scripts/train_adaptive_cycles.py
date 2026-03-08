@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import argparse # 解析命令行参数 
 import sys
-import os
 from pathlib import Path
 
 # 获取当前脚本的绝对路径
@@ -41,7 +40,7 @@ def main() -> None:
 
     static_ckpt = Path(config["logging"]["runs_dir"]) / "cycle0" / "static_surrogate.pt"
     if static_ckpt.exists():
-        static_surrogate = torch.load(static_ckpt)
+        static_surrogate = torch.load(static_ckpt, weights_only=False)
     else:
         static_surrogate = StaticSurrogate(
             input_dim=env.observation_space.shape[0] + 1,
@@ -63,46 +62,62 @@ def main() -> None:
         dataset = build_dataset(transitions)
         static_surrogate.fit(dataset, epochs=5)
     
-    diff_surrogate = DifferentialSurrogate(
-        input_dim=env.observation_space.shape[0] + 1,
-        output_dim=env.observation_space.shape[0] - 1,
-        hidden_sizes=config["surrogate"]["hidden_sizes"],
-        ensemble_size=config["surrogate"]["ensemble_size"],
-        lr=config["surrogate"]["learning_rate"],
-    )
-    combined = CombinedSurrogate(static_surrogate, diff_surrogate)
-
-    run_dir = ensure_dir(Path(config["logging"]["runs_dir"]) / "adaptive")
     adaptive_cfg = AdaptiveConfig(**config["trainer"]["adaptive"])
+    adaptive_cfg.cycles = 1
 
-    cycle0_dir = Path(config["logging"]["runs_dir"]) / "cycle0"
-    ckpt_path = cycle0_dir / "agent_ckpt.pt"
-    if not ckpt_path.exists():
-        raise FileNotFoundError(f"Missing checkpoint: {ckpt_path}")
+    initial_ckpt = Path("runs/cycle0/agent_ckpt.pt")
+    if not initial_ckpt.exists():
+        initial_ckpt = Path(r"runs\cycle0\agent_ckpt.pt")
+    if not initial_ckpt.exists():
+        raise FileNotFoundError(f"Missing checkpoint: {initial_ckpt}")
     
     agent = build_agent_from_config(
         state_dim=env.observation_space.shape[0],
         action_dim=1,
         rl_config=config["rl"],
     )
-    agent.load(str(ckpt_path))
+    agent.load(str(initial_ckpt))
 
-    train_adaptive_cycles(
-        env,
-        agent,
-        static_surrogate,
-        diff_surrogate,
-        combined,
-        reward_cfg,
-        adaptive_cfg,
-        str(run_dir),
-        soh_enabled=config["soh_prior"]["enabled"],
-        lambda_prior=config["soh_prior"]["lambda_prior"],
-        theta_dim=config["soh_prior"]["theta_dim"],
-        dummy_soh=config["soh_prior"]["dummy_soh"],
-    )
+    previous_agent_ckpt = initial_ckpt
+    for aging_stage in range(1, 101):
+        if hasattr(env, "set_aging_stage"):
+            env.set_aging_stage(aging_stage)
 
-    torch.save(diff_surrogate, run_dir / "diff_surrogate.pt")
+        if aging_stage > 1:
+            agent.load(str(previous_agent_ckpt))
+
+        diff_surrogate = DifferentialSurrogate(
+            input_dim=env.observation_space.shape[0] + 1,
+            output_dim=env.observation_space.shape[0] - 1,
+            hidden_sizes=config["surrogate"]["hidden_sizes"],
+            ensemble_size=config["surrogate"]["ensemble_size"],
+            lr=config["surrogate"]["learning_rate"],
+        )
+        combined = CombinedSurrogate(static_surrogate, diff_surrogate)
+
+        stage_run_dir = ensure_dir(Path(config["logging"]["runs_dir"]) / f"adaptive/adaptive_cycle{aging_stage}")
+
+        train_adaptive_cycles(
+            env,
+            agent,
+            static_surrogate,
+            diff_surrogate,
+            combined,
+            reward_cfg,
+            adaptive_cfg,
+            str(stage_run_dir),
+            soh_enabled=config["soh_prior"]["enabled"],
+            lambda_prior=config["soh_prior"]["lambda_prior"],
+            theta_dim=config["soh_prior"]["theta_dim"],
+            dummy_soh=config["soh_prior"]["dummy_soh"],
+        )
+
+        agent_ckpt = stage_run_dir / "agent_ckpt.pt"
+        if hasattr(agent, "save"):
+            agent.save(str(agent_ckpt))
+            previous_agent_ckpt = agent_ckpt
+
+        torch.save(diff_surrogate, stage_run_dir / "diff_surrogate.pt")
 
 
 if __name__ == "__main__":

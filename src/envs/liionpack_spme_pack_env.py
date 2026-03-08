@@ -108,6 +108,9 @@ class LiionpackSPMEPackEnv(BasePackEnv):
         # ---------- 随机数与老化参数 ----------
         self._rng = np.random.default_rng(0)
         self._aging = AgingParams(1.0, 1.0, 1.0)
+        self._aging_stage: int = 1
+        self._sei_resistance_init: float = 0.0
+        self._sei_resistance_per_cycle: float = 5e-4
         # ---------- reset 单体间的不一致性 ----------
         self._soc_init_low = float(soc_init_low)
         self._soc_init_high = float(soc_init_high)
@@ -162,6 +165,23 @@ class LiionpackSPMEPackEnv(BasePackEnv):
     def set_aging(self, aging: AgingParams) -> None:
         self._aging = aging
 
+    def set_aging_stage(self, aging_stage: int) -> None:
+        self._aging_stage = int(np.clip(aging_stage, 1, 100))
+
+    def _contact_resistance(self) -> float:
+        return (
+            self._sei_resistance_init
+            + self._sei_resistance_per_cycle * float(self._aging_stage)
+        )
+
+    def _inject_aging_polarization_drop(
+        self,
+        v_cells_pure: np.ndarray,
+        i_cells: np.ndarray,
+    ) -> np.ndarray:
+        contact_resistance = self._contact_resistance()
+        return v_cells_pure - i_cells * contact_resistance
+    
     # ============== step_output 解析工具 ==============
     # 将liionpack输出转换为cell向量 ： (T,n_cells)、(T,) --> (n_cells,)  
     def _extract_cell_vector(self, arr: Any, *, name: str) -> np.ndarray:
@@ -295,7 +315,9 @@ class LiionpackSPMEPackEnv(BasePackEnv):
         so = self._rm.step_output()
 
         # 从 step_output 读取真实输出
-        v_cells = np.asarray(so["Terminal voltage [V]"][-1, :], dtype=float)
+        v_cells_pure = np.asarray(so["Terminal voltage [V]"][-1, :], dtype=float)
+        i_cells = self._extract_cell_vector(so["Cell current [A]"], name="Cell current [A]")
+        v_cells = self._inject_aging_polarization_drop(v_cells_pure, i_cells)
         t_cells = np.asarray(so["Volume-averaged cell temperature [K]"][-1, :], dtype=float)
         v_pack = self._extract_scalar_last(so["Pack terminal voltage [V]"])
 
@@ -319,7 +341,7 @@ class LiionpackSPMEPackEnv(BasePackEnv):
             t_cells=t_cells,
             v_pack=v_pack,
             so=so,
-            i_cells=None,
+            i_cells=i_cells,
             violation=False,
             reason="reset",
             extra={"vlims_ok": True, "lp_step": 0},
@@ -341,13 +363,13 @@ class LiionpackSPMEPackEnv(BasePackEnv):
         # 真实输出
         # 真实执行的 pack 电流（环境状态的一部分）
         I_pack_true = self._extract_scalar_last(so["Pack current [A]"])
-        v_cells = np.asarray(so["Terminal voltage [V]"][-1, :], dtype=float)
+        v_cells_pure = np.asarray(so["Terminal voltage [V]"][-1, :], dtype=float)
         t_cells = np.asarray(so["Volume-averaged cell temperature [K]"][-1, :], dtype=float)
         v_pack = self._extract_scalar_last(so["Pack terminal voltage [V]"])
 
         # cell current（用于 SOC proxy）
         i_cells = self._extract_cell_vector(so["Cell current [A]"], name="Cell current [A]")
-
+        v_cells = self._inject_aging_polarization_drop(v_cells_pure, i_cells)
         # SOC proxy 更新
         soc_prev = self._state.soc
         soc, soc_pack = self._update_soc_by_cell_currents(
@@ -483,6 +505,8 @@ class LiionpackSPMEPackEnv(BasePackEnv):
             # 终止与安全
             "terminated_reason": str(reason),
             "violation": bool(violation),
+            "aging_stage": int(self._aging_stage),
+            "contact_resistance": float(self._contact_resistance()),
             "backend": "liionpack",
         }
 
