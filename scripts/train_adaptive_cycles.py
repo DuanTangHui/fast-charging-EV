@@ -26,6 +26,11 @@ from src.utils.config import load_config
 from src.utils.logging import ensure_dir
 from src.utils.seeds import set_global_seed
 
+# 手动修改这里来控制从哪个老化阶段开始训练（包含该阶段）
+START_AGING_STAGE = 1
+# 手动修改这里来控制训练到哪个老化阶段结束（包含该阶段）
+END_AGING_STAGE = 100
+
 def _load_network_weights_only(agent: object, ckpt_path: Path) -> None:
     """Load model weights only (no replay/optimizer/update_step) for adaptation experiments."""
     ckpt = torch.load(str(ckpt_path), map_location="cpu", weights_only=False)
@@ -87,9 +92,7 @@ def main() -> None:
     adaptive_cfg = AdaptiveConfig(**config["trainer"]["adaptive"])
     adaptive_cfg.cycles = 1
 
-    initial_ckpt = Path("runs/cycle0/agent_ckpt.pt")
-    if not initial_ckpt.exists():
-        initial_ckpt = Path(r"runs/cycle0/agent_ckpt.pt")
+    initial_ckpt = Path(config["logging"]["runs_dir"]) / "cycle0" / "agent_ckpt.pt"
     if not initial_ckpt.exists():
         raise FileNotFoundError(f"Missing checkpoint: {initial_ckpt}")
     
@@ -101,7 +104,19 @@ def main() -> None:
     # agent.load(str(initial_ckpt))
 
     previous_agent_ckpt = initial_ckpt
-    for aging_stage in range(1, 101):
+    if START_AGING_STAGE > 1:
+        resume_ckpt = (
+            Path(config["logging"]["runs_dir"])
+            / f"adaptive/adaptive_cycle{START_AGING_STAGE - 1}"
+            / "agent_ckpt.pt"
+        )
+        if not resume_ckpt.exists():
+            raise FileNotFoundError(
+                "Missing resume checkpoint for requested start stage: "
+                f"{resume_ckpt}. Run earlier stages first or set START_AGING_STAGE = 1."
+            )
+        previous_agent_ckpt = resume_ckpt
+    for aging_stage in range(START_AGING_STAGE, END_AGING_STAGE + 1):
         agent = build_agent_from_config(
             state_dim=env.observation_space.shape[0],
             action_dim=1,
