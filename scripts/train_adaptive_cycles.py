@@ -26,6 +26,28 @@ from src.utils.config import load_config
 from src.utils.logging import ensure_dir
 from src.utils.seeds import set_global_seed
 
+def _load_network_weights_only(agent: object, ckpt_path: Path) -> None:
+    """Load model weights only (no replay/optimizer/update_step) for adaptation experiments."""
+    ckpt = torch.load(str(ckpt_path), map_location="cpu", weights_only=False)
+
+    # TD3
+    for key, attr in [
+        ("actor", "actor"),
+        ("actor_target", "actor_target"),
+        ("critic1", "critic1"),
+        ("critic2", "critic2"),
+        ("critic1_target", "critic1_target"),
+        ("critic2_target", "critic2_target"),
+        # DDPG
+        ("target_actor", "target_actor"),
+        ("target_critic", "target_critic"),
+        ("critic", "critic"),
+        # PPO/common
+        ("actor", "actor"),
+    ]:
+        module = getattr(agent, attr, None)
+        if module is not None and key in ckpt:
+            module.load_state_dict(ckpt[key])
 
 def main() -> None:
     parser = argparse.ArgumentParser()
@@ -67,19 +89,26 @@ def main() -> None:
 
     initial_ckpt = Path("runs/cycle0/agent_ckpt.pt")
     if not initial_ckpt.exists():
-        initial_ckpt = Path(r"runs\cycle0\agent_ckpt.pt")
+        initial_ckpt = Path(r"runs/cycle0/agent_ckpt.pt")
     if not initial_ckpt.exists():
         raise FileNotFoundError(f"Missing checkpoint: {initial_ckpt}")
     
-    agent = build_agent_from_config(
-        state_dim=env.observation_space.shape[0],
-        action_dim=1,
-        rl_config=config["rl"],
-    )
-    agent.load(str(initial_ckpt))
+    # agent = build_agent_from_config(
+    #     state_dim=env.observation_space.shape[0],
+    #     action_dim=1,
+    #     rl_config=config["rl"],
+    # )
+    # agent.load(str(initial_ckpt))
 
     previous_agent_ckpt = initial_ckpt
     for aging_stage in range(1, 101):
+        agent = build_agent_from_config(
+            state_dim=env.observation_space.shape[0],
+            action_dim=1,
+            rl_config=config["rl"],
+        )
+        _load_network_weights_only(agent, previous_agent_ckpt)
+        
         if hasattr(env, "set_aging_stage"):
             env.set_aging_stage(aging_stage)
 

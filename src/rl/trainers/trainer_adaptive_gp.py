@@ -151,8 +151,8 @@ class AdaptiveConfig:
     plot_interval: int = 1
 
     # exploration noise on surrogate rollouts (absolute A)
-    noise_sigma_start: float = 2.0
-    noise_sigma_end: float = 0.1 
+    noise_sigma_start: float = 0.2
+    noise_sigma_end: float = 0.05 
     hold_steps: int = 1
     v_soft_max: float = 4.17
     t_soft_max: float = 309.5
@@ -185,10 +185,6 @@ def train_adaptive_cycles(
     high = float(agent.config.action_high)
 
     for cycle in range(1, config.cycles + 1):
-        # 设置老化环境
-        if hasattr(env, "set_aging_stage"):
-            env.set_aging_stage(cycle)
-        # ------------------------------------------------------------
         # (A) Collect REAL transitions (use agent policy, not random)
         # ------------------------------------------------------------
         cycle0_like_cfg = Cycle0Config(
