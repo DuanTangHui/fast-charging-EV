@@ -103,7 +103,7 @@ def main() -> None:
     # 2. 构建真实环境 (LiionPack)
     print("Building environment...")
     env = build_pack_env(config["env"])
-
+    env.set_aging_stage(1)
     # 3. 初始化 Agent (结构必须与训练时一致)
     print("Initializing Agent...")
     # 注意：action_dim 这里硬编码为 1，与你训练脚本一致

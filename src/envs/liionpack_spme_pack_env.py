@@ -108,9 +108,9 @@ class LiionpackSPMEPackEnv(BasePackEnv):
         # ---------- 随机数与老化参数 ----------
         self._rng = np.random.default_rng(0)
         self._aging = AgingParams(1.0, 1.0, 1.0)
-        self._aging_stage: int = 1
+        self._aging_stage: int = 0
         self._sei_resistance_init: float = 0.0
-        self._sei_resistance_per_cycle: float = 5e-4
+        self._sei_resistance_per_cycle: float = 2e-3
         # ---------- reset 单体间的不一致性 ----------
         self._soc_init_low = float(soc_init_low)
         self._soc_init_high = float(soc_init_high)
@@ -166,7 +166,7 @@ class LiionpackSPMEPackEnv(BasePackEnv):
         self._aging = aging
 
     def set_aging_stage(self, aging_stage: int) -> None:
-        self._aging_stage = int(np.clip(aging_stage, 1, 100))
+        self._aging_stage = int(np.clip(aging_stage, 0, 100))
 
     def _contact_resistance(self) -> float:
         return (
