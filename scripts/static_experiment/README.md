@@ -20,6 +20,7 @@
   - 对比两种训练方式最终策略在**真实物理环境**下的一次完整充电轨迹：电流/SOC/电压/温度-时间曲线。
   - 方案A：真实环境按 `train_cycle0 -> collect_real_data` 同逻辑训练 650 episodes。
   - 方案B：直接加载已训练混合策略 `runs/cycle0/agent_ckpt.pt`。
+  - 会默认保存真实环境训练后的 agent 到 `runs/static_experiment/exp1_policy_shape/real_trained_agent_ckpt.pt`。
 
 - `experiment_training_process_1000.py`（实验3）
   - 对比真实基线与混合方案在 1000 episode 全过程中的四项指标：
@@ -28,6 +29,11 @@
     - 电压违规程度（max(V)-4.2）
     - 温度违规程度（max(T)-309.15）
   - 输出原始 CSV 与总图。
+  - 会默认保存：真实基线 agent、混合方案 agent、拟合后的 surrogate 模型。
+
+- `scripts/experiment_static_surrogate_validity.py`（实验3，仓库已有实现）
+  - 静态模型回归指标评估（R2/MSE/MAE）。
+  - 在真实环境与静态代理环境中各模拟一次完整充电，输出曲线对比与原始轨迹 CSV。
 
 
 > 说明：真实物理环境训练已切换为与 `collect_real_data` 一致的交互逻辑，
@@ -36,19 +42,11 @@
 ## 运行示例
 
 ```bash
-python scripts/static_experiment/experiment_policy_shape_comparison.py \
-  --config configs/pack_3p6s_spme.yaml \
-  --real-episodes 650 \
-  --agent-ckpt runs/cycle0/agent_ckpt.pt
+python scripts/static_experiment/experiment_policy_shape_comparison.py --config configs/pack_3p6s_spme.yaml --real-episodes 650 --agent-ckpt runs/cycle0/agent_ckpt.pt
 
-python scripts/static_experiment/experiment_training_process_1000.py \
-  --config configs/pack_3p6s_spme.yaml
+python scripts/static_experiment/experiment_training_process_1000.py  --config configs/pack_3p6s_spme.yaml
 
-python scripts/experiment_static_surrogate_validity.py \
-  --config configs/pack_3p6s_spme.yaml \
-  --dataset dataset_with_episode.csv \
-  --agent-ckpt runs/cycle0/agent_ckpt.pt \
-  --surrogate-ckpt runs/cycle0/static_surrogate.pt
+python scripts/experiment_static_surrogate_validity.py  
 ```
 
 ## 输出

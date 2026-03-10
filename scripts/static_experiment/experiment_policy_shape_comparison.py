@@ -50,11 +50,15 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--real-episodes", type=int, default=650)
     parser.add_argument("--agent-ckpt", type=Path, default=Path("runs/cycle0/agent_ckpt.pt"))
+    parser.add_argument("--save-real-agent-ckpt", type=Path, default=None)
     args = parser.parse_args()
 
     cfg, env_real, agent_real, reward_cfg = build_env_agent_reward(args.config, args.seed)
     _ = cfg
     run_real_training_collect_style(env_real, agent_real, reward_cfg, episodes=args.real_episodes)
+    save_real_ckpt = args.save_real_agent_ckpt or (args.output_dir / "real_trained_agent_ckpt.pt")
+    save_real_ckpt.parent.mkdir(parents=True, exist_ok=True)
+    agent_real.save(str(save_real_ckpt))
     real_traj = evaluate_policy_trajectory(env_real, agent_real, seed=args.seed)
 
     _, env_mix, agent_mix, reward_cfg_mix = build_env_agent_reward(args.config, args.seed)
@@ -64,6 +68,7 @@ def main() -> None:
 
     plot_trajectories(real_traj, mix_traj, args.output_dir / "policy_shape_comparison.png")
     print(f"[Done] 保存到: {args.output_dir}")
+    print(f"[Saved] 真实环境训练 agent: {save_real_ckpt}")
 
 
 if __name__ == "__main__":

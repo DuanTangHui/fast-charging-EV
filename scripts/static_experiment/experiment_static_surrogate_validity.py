@@ -275,32 +275,8 @@ def plot_efficiency(real_t: float, gp_t: float, path: Path) -> None:
     ax.set_title("Single-Episode Efficiency")
     plt.tight_layout(); plt.savefig(path, dpi=220); plt.close(fig)
 
-
-def main() -> None:
-    p = argparse.ArgumentParser()
-    p.add_argument("--dataset", type=Path, default=Path("dataset_with_episode.csv"))
-    p.add_argument("--config", type=Path, default=Path("configs/pack_3p6s_spme.yaml"))
-    p.add_argument("--agent-ckpt", type=Path, default=Path("runs/cycle0/agent_ckpt.pt"))
-    p.add_argument("--surrogate-ckpt", type=Path, default=Path("runs/cycle0/static_surrogate.pt"))
-    p.add_argument("--output-dir", type=Path, default=Path("runs/static_surrogate_validity_real"))
-    p.add_argument("--episode-start", type=int, default=20)
-    p.add_argument("--episode-end", type=int, default=50)
-    p.add_argument("--k-folds", type=int, default=5)
-    p.add_argument("--cv-repeats", type=int, default=2)
-    p.add_argument("--cv-epochs", type=int, default=20)
-    p.add_argument("--seed", type=int, default=7)
-    p.add_argument("--soc-stop", type=float, default=0.8)
-    p.add_argument("--max-steps", type=int, default=720)
-    args = p.parse_args()
-
-    for req in [args.dataset, args.config, args.agent_ckpt, args.surrogate_ckpt]:
-        if not req.exists():
-            raise FileNotFoundError(f"Required file not found: {req}")
-
-    args.output_dir.mkdir(parents=True, exist_ok=True)
-    cfg = load_config(str(args.config)).data
-    set_global_seed(args.seed)
-
+# 基于统计指标的交叉验证
+def run_cross_validation_part(args: argparse.Namespace, cfg: dict) -> List[Dict[str, float]]:
     states, actions, deltas, episodes = load_dataset_with_episode(args.dataset)
     cv_rows = run_episode_curve_cv(
         states, actions, deltas, episodes,
@@ -317,7 +293,10 @@ def main() -> None:
     save_episode_curve_csv(cv_rows, args.output_dir / "episode_cv_metrics.csv")
     plot_r2_curve(cv_rows, args.output_dir / "fig6_r2_vs_episode.png")
     plot_mse_mae_curve(cv_rows, args.output_dir / "fig7_mse_mae_vs_episode.png")
+    return cv_rows
 
+# 完整环境仿真对比
+def run_full_rollout_compare_part(args: argparse.Namespace, cfg: dict) -> Tuple[Dict[str, np.ndarray], Dict[str, np.ndarray], float, float]:
     env = build_pack_env(cfg["env"])
     agent = build_agent_from_config(state_dim=env.observation_space.shape[0], action_dim=1, rl_config=cfg["rl"])
     agent.load(str(args.agent_ckpt), map_location="cpu")
@@ -333,19 +312,65 @@ def main() -> None:
     plot_rollout_compare(real, gp, args.output_dir / "full_rollout_compare.png")
     rt, gt = float(real["time_s"][0]), float(gp["time_s"][0])
     plot_efficiency(rt, gt, args.output_dir / "efficiency_compare.png")
+    return real, gp, rt, gt
 
+
+def main() -> None:
+    p = argparse.ArgumentParser()
+    p.add_argument("--dataset", type=Path, default=Path("dataset_with_episode.csv"))
+    p.add_argument("--config", type=Path, default=Path("configs/pack_3p6s_spme.yaml"))
+    p.add_argument("--agent-ckpt", type=Path, default=Path("runs/cycle0/agent_ckpt.pt"))
+    p.add_argument("--surrogate-ckpt", type=Path, default=Path("runs/cycle0/static_surrogate.pt"))
+    p.add_argument("--output-dir", type=Path, default=Path("runs/static_surrogate_validity_real"))
+    p.add_argument("--episode-start", type=int, default=20)
+    p.add_argument("--episode-end", type=int, default=50)
+    p.add_argument("--k-folds", type=int, default=5)
+    p.add_argument("--cv-repeats", type=int, default=2)
+    p.add_argument("--cv-epochs", type=int, default=20)
+    p.add_argument("--seed", type=int, default=7)
+    p.add_argument("--soc-stop", type=float, default=0.8)
+    p.add_argument("--max-steps", type=int, default=720)
+    p.add_argument("--skip-cv", action="store_true", help="Skip cross-validation metrics and plots.")
+    p.add_argument("--skip-rollout", action="store_true", help="Skip real-vs-surrogate full rollout comparison.")
+    args = p.parse_args()
+
+    for req in [args.config, args.agent_ckpt, args.surrogate_ckpt]:
+        if not req.exists():
+            raise FileNotFoundError(f"Required file not found: {req}")
+    if not args.skip_cv and not args.dataset.exists():
+        raise FileNotFoundError(f"Required file not found: {args.dataset}")
+
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+    cfg = load_config(str(args.config)).data
+    set_global_seed(args.seed)
+
+    cv_rows: List[Dict[str, float]] = []
+    if not args.skip_cv:
+        cv_rows = run_cross_validation_part(args, cfg)
+
+    real = gp = None
+    rt = gt = float("nan")
+    if not args.skip_rollout:
+        real, gp, rt, gt = run_full_rollout_compare_part(args, cfg)
     with (args.output_dir / "summary.txt").open("w", encoding="utf-8") as f:
         f.write("Static surrogate validity experiment summary (real env)\n")
-        f.write(f"Episode range = [{args.episode_start}, {args.episode_end}]\n")
-        f.write(f"CV scheme = {args.k_folds}-fold repeated {args.cv_repeats} times\n")
-        f.write(f"CV average R2 (curve mean) = {np.mean([r['r2'] for r in cv_rows]):.6f}\n")
-        f.write(f"CV average MSE (curve mean) = {np.mean([r['mse'] for r in cv_rows]):.6e}\n")
-        f.write(f"CV average MAE (curve mean) = {np.mean([r['mae'] for r in cv_rows]):.6e}\n")
-        f.write(f"Single rollout final SOC (real) = {real['soc'][-1]:.6f}\n")
-        f.write(f"Single rollout final SOC (gp) = {gp['soc'][-1]:.6f}\n")
-        f.write(f"Runtime real env = {rt:.6f} s\n")
-        f.write(f"Runtime static GP = {gt:.6f} s\n")
-        f.write(f"Speedup (real/gp) = {rt / (gt + 1e-12):.2f}x\n")
+        if cv_rows:
+            f.write(f"Episode range = [{args.episode_start}, {args.episode_end}]\n")
+            f.write(f"CV scheme = {args.k_folds}-fold repeated {args.cv_repeats} times\n")
+            f.write(f"CV average R2 (curve mean) = {np.mean([r['r2'] for r in cv_rows]):.6f}\n")
+            f.write(f"CV average MSE (curve mean) = {np.mean([r['mse'] for r in cv_rows]):.6e}\n")
+            f.write(f"CV average MAE (curve mean) = {np.mean([r['mae'] for r in cv_rows]):.6e}\n")
+        else:
+            f.write("CV part skipped.\n")
+
+        if real is not None and gp is not None:
+            f.write(f"Single rollout final SOC (real) = {real['soc'][-1]:.6f}\n")
+            f.write(f"Single rollout final SOC (gp) = {gp['soc'][-1]:.6f}\n")
+            f.write(f"Runtime real env = {rt:.6f} s\n")
+            f.write(f"Runtime static GP = {gt:.6f} s\n")
+            f.write(f"Speedup (real/gp) = {rt / (gt + 1e-12):.2f}x\n")
+        else:
+            f.write("Full rollout comparison part skipped.\n")
 
     print(f"[Done] output_dir={args.output_dir}")
 

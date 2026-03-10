@@ -16,6 +16,7 @@ import sys
 from pathlib import Path
 import matplotlib.pyplot as plt
 import pandas as pd
+import torch
 
 current_dir = Path(__file__).resolve().parent
 if str(current_dir) not in sys.path:
@@ -60,15 +61,24 @@ def main() -> None:
     parser.add_argument("--episodes", type=int, default=1000)
     parser.add_argument("--mix-real-warmup", type=int, default=50)
     parser.add_argument("--surrogate-epochs", type=int, default=25)
+    parser.add_argument("--save-real-agent-ckpt", type=Path, default=None)
+    parser.add_argument("--save-hybrid-agent-ckpt", type=Path, default=None)
+    parser.add_argument("--save-surrogate-ckpt", type=Path, default=None)
     args = parser.parse_args()
 
     cfg, env_real, agent_real, reward_cfg = build_env_agent_reward(args.config, args.seed)
     real_metrics, _ = run_real_training_collect_style(env_real, agent_real, reward_cfg, episodes=args.episodes)
+    real_ckpt = args.save_real_agent_ckpt or (args.output_dir / "real_baseline_agent_ckpt.pt")
+    real_ckpt.parent.mkdir(parents=True, exist_ok=True)
+    agent_real.save(str(real_ckpt))
     save_metrics_csv(real_metrics, args.output_dir / "real_baseline_metrics.csv")
 
     _, env_mix, agent_mix, reward_cfg_mix = build_env_agent_reward(args.config, args.seed)
     warm_metrics, transitions = run_real_training_collect_style(env_mix, agent_mix, reward_cfg_mix, episodes=args.mix_real_warmup)
     surrogate = fit_static_surrogate(env_mix, transitions, cfg, epochs=args.surrogate_epochs)
+    surrogate_ckpt = args.save_surrogate_ckpt or (args.output_dir / "fitted_static_surrogate.pt")
+    surrogate_ckpt.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(surrogate, surrogate_ckpt)
     remain = max(0, args.episodes - args.mix_real_warmup)
     mix_sur_metrics = run_surrogate_training(env_mix, agent_mix, surrogate, reward_cfg_mix, episodes=remain, rollouts_per_episode=3, updates_per_episode=50)
 
@@ -76,10 +86,16 @@ def main() -> None:
     for idx, m in enumerate(mix_sur_metrics, start=args.mix_real_warmup + 1):
         m.episode = idx
     mix_metrics = warm_metrics + mix_sur_metrics
+    hybrid_ckpt = args.save_hybrid_agent_ckpt or (args.output_dir / "hybrid_agent_ckpt.pt")
+    hybrid_ckpt.parent.mkdir(parents=True, exist_ok=True)
+    agent_mix.save(str(hybrid_ckpt))
     save_metrics_csv(mix_metrics, args.output_dir / "hybrid_metrics.csv")
 
     plot_metric_curves(pd.DataFrame([m.__dict__ for m in real_metrics]), pd.DataFrame([m.__dict__ for m in mix_metrics]), args.output_dir / "training_process_1000_compare.png")
     print(f"[Done] 保存到: {args.output_dir}")
+    print(f"[Saved] 真实基线 agent: {real_ckpt}")
+    print(f"[Saved] 混合方案 agent: {hybrid_ckpt}")
+    print(f"[Saved] 拟合 surrogate: {surrogate_ckpt}")
 
 
 if __name__ == "__main__":
