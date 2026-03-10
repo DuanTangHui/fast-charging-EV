@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Dict, List
-
+import warnings
 import matplotlib.pyplot as plt
 import numpy as np
 
@@ -20,7 +20,12 @@ from ...surrogate.gp_static import StaticSurrogate
 from ...utils.logging import log_metrics
 from ...envs.observables import curve_from_infos
 from ...utils.plotting import plot_episode
-from .trainer_static_gp import Cycle0Config, collect_real_data
+from .trainer_static_gp import (
+    Cycle0Config,
+    collect_real_data,
+    save_transitions_with_episode_to_csv,
+)
+
 
 def _is_on_policy_agent(agent: Any) -> bool:
     return bool(getattr(agent, "is_on_policy", False))
@@ -180,6 +185,34 @@ def train_adaptive_cycles(
         3) surrogate rollouts (policy = agent + noise) -> agent.observe + agent.update
     """
     all_metrics: List[Dict[str, float]] = []
+    def _save_episode_ids_csv_robust(
+        transitions: List[tuple[np.ndarray, np.ndarray, np.ndarray]],
+        episode_ids: List[int],
+    ) -> None:
+        """Save transition episode ids CSV with static-trainer-compatible format.
+
+        Prefer strict static implementation; if lengths mismatch, warn and save
+        the aligned subset for robustness.
+        """
+        csv_path = "dataset_with_episode.csv"
+        if len(transitions) == len(episode_ids):
+            save_transitions_with_episode_to_csv(transitions, episode_ids, csv_path)
+            return
+
+        paired_len = min(len(transitions), len(episode_ids))
+        warnings.warn(
+            "collect_real_data returned mismatched lengths for transitions "
+            f"({len(transitions)}) and transition_episode_ids ({len(episode_ids)}); "
+            f"saving first {paired_len} rows to {csv_path}.",
+            RuntimeWarning,
+        )
+        if paired_len == 0:
+            return
+        save_transitions_with_episode_to_csv(
+            transitions[:paired_len],
+            episode_ids[:paired_len],
+            csv_path,
+        )
 
     low = float(agent.config.action_low)
     high = float(agent.config.action_high)
@@ -200,7 +233,8 @@ def train_adaptive_cycles(
             v_soft_max=config.v_soft_max,
             t_soft_max=config.t_soft_max,
         )
-        transitions, _ = collect_real_data(env, reward_cfg, agent, cycle0_like_cfg)
+        transitions, transition_episode_ids = collect_real_data(env, reward_cfg, agent, cycle0_like_cfg)
+        _save_episode_ids_csv_robust(transitions, transition_episode_ids)
         # ------------------------------------------------------------
         # (B) Fit DIFFERENTIAL surrogate on residual
         #     delta_hat = delta_real - delta_static
