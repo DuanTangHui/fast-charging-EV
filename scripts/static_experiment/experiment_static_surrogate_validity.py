@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import os
 import sys
 import time
 from pathlib import Path
@@ -23,6 +24,8 @@ from typing import Dict, List, Tuple
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+from matplotlib import font_manager
+from matplotlib.font_manager import FontProperties
 
 current_dir = Path(__file__).resolve().parent
 root_dir = current_dir.parent.parent
@@ -42,6 +45,61 @@ NATURE_BLUE = "#3B6FB6"
 NATURE_GREEN = "#7AA974"
 GRID_COLOR = "#D0D0D0"
 
+CM_TO_INCH = 1.0 / 2.54
+SUBPLOT_WIDTH_CM = 7.5
+SUBPLOT_HEIGHT_CM = 5.0
+FONT_SIZE = 9
+
+
+def _register_font_if_exists(path: str) -> bool:
+    if os.path.exists(path):
+        font_manager.fontManager.addfont(path)
+        return True
+    return False
+
+
+def _pick_font(candidates: List[str]) -> str:
+    available = {f.name for f in font_manager.fontManager.ttflist}
+    for name in candidates:
+        if name in available:
+            return name
+    return candidates[-1]
+
+
+# 尝试注册常见系统宋体路径（含 Windows）
+for _path in [
+    r"C:\Windows\Fonts\simsun.ttc",
+    "/usr/share/fonts/truetype/arphic/uming.ttc",
+    "/usr/share/fonts/opentype/noto/NotoSerifCJK-Regular.ttc",
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+]:
+    _register_font_if_exists(_path)
+
+ZH_FONT_NAME = _pick_font(["SimSun", "Songti SC", "Noto Serif CJK SC", "Noto Sans CJK SC", "AR PL UMing CN", "DejaVu Sans"])
+EN_FONT_NAME = _pick_font(["Times New Roman", "Times", "Nimbus Roman", "DejaVu Serif"])
+
+ZH_FONT = FontProperties(family=ZH_FONT_NAME, size=FONT_SIZE)
+EN_FONT = FontProperties(family=EN_FONT_NAME, size=FONT_SIZE)
+
+
+def setup_plot_style() -> None:
+    plt.rcParams.update({
+        "font.size": FONT_SIZE,
+        "font.family": "serif",
+        "font.serif": [ZH_FONT_NAME, EN_FONT_NAME],
+        "mathtext.fontset": "custom",
+        "mathtext.rm": EN_FONT_NAME,
+        "pdf.fonttype": 42,
+        "ps.fonttype": 42,
+        "axes.unicode_minus": False,
+    })
+
+
+def apply_axis_fonts(ax) -> None:
+    for label in ax.get_xticklabels() + ax.get_yticklabels():
+        label.set_fontproperties(EN_FONT)
+    for spine in ax.spines.values():
+        spine.set_linewidth(0.8)
 
 def load_dataset_with_episode(path: Path) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     data = np.genfromtxt(path, delimiter=",", names=True, dtype=np.float32)
@@ -159,6 +217,23 @@ def run_episode_curve_cv(
     return rows
 
 
+
+def load_episode_curve_csv(path: Path) -> List[Dict[str, float]]:
+    rows: List[Dict[str, float]] = []
+    with path.open("r", newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            rows.append({
+                "episode": float(row["episode"]),
+                "samples": float(row.get("samples", 0.0)),
+                "r2": float(row.get("r2", 0.0)),
+                "mse": float(row["mse"]),
+                "mae": float(row["mae"]),
+            })
+    if not rows:
+        raise ValueError(f"CSV is empty: {path}")
+    return rows
+
 def save_episode_curve_csv(rows: List[Dict[str, float]], path: Path) -> None:
     with path.open("w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=["episode", "samples", "r2", "mse", "mae"])
@@ -183,27 +258,57 @@ def plot_r2_curve(rows: List[Dict[str, float]], path: Path) -> None:
 
 
 def plot_mse_mae_curve(rows: List[Dict[str, float]], path: Path) -> None:
+    setup_plot_style()
     x = np.array([int(r["episode"]) for r in rows])
     mse = np.array([r["mse"] for r in rows])
     mae = np.array([r["mae"] for r in rows])
 
-    fig, ax1 = plt.subplots(figsize=(6.0, 4.6))
-    ax2 = ax1.twinx()
-
-    ax1.plot(x, mse, color=NATURE_BLUE, linewidth=2.0)
-    ax2.plot(x, mae, color=NATURE_GREEN, linewidth=2.0)
-
-    ax1.set_xlim(20, 50)
-    ax1.set_xlabel("Episode Number")
-    ax1.set_ylabel("5-Fold MSE of GP [-]", color=NATURE_BLUE)
-    ax2.set_ylabel("5-Fold MAE of GP [-]", color=NATURE_GREEN)
-    ax1.tick_params(axis="y", colors=NATURE_BLUE)
-    ax2.tick_params(axis="y", colors=NATURE_GREEN)
-    ax1.grid(True, color=GRID_COLOR, alpha=0.7)
-
-    plt.tight_layout()
-    plt.savefig(path, dpi=220)
+    # 保留合并图输出（PNG + PDF）：MSE 和 MAE 同图双 y 轴
+    combined_size = (SUBPLOT_WIDTH_CM * CM_TO_INCH, SUBPLOT_HEIGHT_CM * CM_TO_INCH)
+    fig, ax = plt.subplots(figsize=combined_size)
+    ax_mse = ax
+    ax_mae = ax.twinx()
+    ax_mse.plot(x, mse, color=NATURE_BLUE, linewidth=2.0)
+    ax_mae.plot(x, mae, color=NATURE_GREEN, linewidth=2.0)
+    ax_mse.set_xlim(20, 50)
+    ax_mse.set_xlabel("回合数", fontproperties=ZH_FONT)
+    ax_mse.set_ylabel("5折交叉验证 MSE", color=NATURE_BLUE, fontproperties=ZH_FONT)
+    ax_mae.set_ylabel("5折交叉验证 MAE", color=NATURE_GREEN, fontproperties=ZH_FONT)
+    ax_mse.tick_params(axis="y", colors=NATURE_BLUE)
+    ax_mae.tick_params(axis="y", colors=NATURE_GREEN)
+    ax_mse.grid(True, color=GRID_COLOR, alpha=0.7)
+    apply_axis_fonts(ax_mse)
+    apply_axis_fonts(ax_mae)
+    fig.tight_layout()
+    fig.savefig(path, dpi=220)
+    fig.savefig(path.with_suffix('.pdf'))
     plt.close(fig)
+
+    sub_size = (SUBPLOT_WIDTH_CM * CM_TO_INCH, SUBPLOT_HEIGHT_CM * CM_TO_INCH)
+    mse_pdf = path.with_name("fig7_mse_vs_episode_subfig.pdf")
+    mae_pdf = path.with_name("fig7_mae_vs_episode_subfig.pdf")
+
+    fig_mse, ax_mse = plt.subplots(figsize=sub_size)
+    ax_mse.plot(x, mse, color=NATURE_BLUE, linewidth=1.8)
+    ax_mse.set_xlim(20, 50)
+    ax_mse.set_xlabel("回合数", fontproperties=ZH_FONT)
+    ax_mse.set_ylabel("5折交叉验证 MSE", fontproperties=ZH_FONT)
+    ax_mse.grid(True, color=GRID_COLOR, alpha=0.7)
+    apply_axis_fonts(ax_mse)
+    fig_mse.tight_layout()
+    fig_mse.savefig(mse_pdf)
+    plt.close(fig_mse)
+
+    fig_mae, ax_mae = plt.subplots(figsize=sub_size)
+    ax_mae.plot(x, mae, color=NATURE_GREEN, linewidth=1.8)
+    ax_mae.set_xlim(20, 50)
+    ax_mae.set_xlabel("回合数", fontproperties=ZH_FONT)
+    ax_mae.set_ylabel("5折交叉验证 MAE", fontproperties=ZH_FONT)
+    ax_mae.grid(True, color=GRID_COLOR, alpha=0.7)
+    apply_axis_fonts(ax_mae)
+    fig_mae.tight_layout()
+    fig_mae.savefig(mae_pdf)
+    plt.close(fig_mae)
 
 
 def rollout_real_env(env, agent, seed: int, max_steps: int, soc_stop: float) -> Dict[str, np.ndarray]:
@@ -252,6 +357,7 @@ def rollout_surrogate(initial_state: np.ndarray, agent, surrogate: StaticSurroga
 
 
 def plot_rollout_compare(real: Dict[str, np.ndarray], gp: Dict[str, np.ndarray], path: Path) -> None:
+    setup_plot_style()
     tr = np.arange(len(real["soc"]))
     tg = np.arange(len(gp["soc"]))
     fig, axes = plt.subplots(2, 2, figsize=(12, 8))
@@ -266,6 +372,29 @@ def plot_rollout_compare(real: Dict[str, np.ndarray], gp: Dict[str, np.ndarray],
         ax.grid(True, color=GRID_COLOR, alpha=0.7)
     axes[0, 0].legend()
     plt.tight_layout(); plt.savefig(path, dpi=220); plt.close(fig)
+
+    sub_size = (SUBPLOT_WIDTH_CM * CM_TO_INCH, SUBPLOT_HEIGHT_CM * CM_TO_INCH)
+    series = [
+        ("current", "电流 (A)", "full_rollout_current_subfig.pdf"),
+        ("voltage", "电压 (V)", "full_rollout_voltage_subfig.pdf"),
+        ("soc", "荷电状态 SOC", "full_rollout_soc_subfig.pdf"),
+        ("temperature", "温度 (K)", "full_rollout_temperature_subfig.pdf"),
+    ]
+
+    for key, ylabel, fname in series:
+        fig_sub, ax_sub = plt.subplots(figsize=sub_size)
+        ax_sub.plot(tr, real[key], color=NATURE_BLUE, label="真实环境", linewidth=1.6)
+        ax_sub.plot(tg, gp[key], "--", color=NATURE_GREEN, label="静态GP", linewidth=1.6)
+        ax_sub.set_xlabel("步数", fontproperties=ZH_FONT)
+        ax_sub.set_ylabel(ylabel, fontproperties=ZH_FONT)
+        ax_sub.grid(True, color=GRID_COLOR, alpha=0.7)
+        legend = ax_sub.legend(prop=ZH_FONT, frameon=False)
+        for text in legend.get_texts():
+            text.set_fontproperties(ZH_FONT)
+        apply_axis_fonts(ax_sub)
+        fig_sub.tight_layout()
+        fig_sub.savefig(path.with_name(fname))
+        plt.close(fig_sub)
 
 
 def plot_efficiency(real_t: float, gp_t: float, path: Path) -> None:
@@ -332,15 +461,28 @@ def main() -> None:
     p.add_argument("--max-steps", type=int, default=720)
     p.add_argument("--skip-cv", action="store_true", help="Skip cross-validation metrics and plots.")
     p.add_argument("--skip-rollout", action="store_true", help="Skip real-vs-surrogate full rollout comparison.")
+    p.add_argument("--cv-metrics-csv", type=Path, default=None, help="Read episode_cv_metrics.csv and redraw fig7 directly.")
+    p.add_argument("--plot-fig7-from-csv", action="store_true", help="Only redraw fig7 from --cv-metrics-csv and exit.")
     args = p.parse_args()
 
-    for req in [args.config, args.agent_ckpt, args.surrogate_ckpt]:
-        if not req.exists():
-            raise FileNotFoundError(f"Required file not found: {req}")
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+
+    if args.plot_fig7_from_csv:
+        csv_path = args.cv_metrics_csv or (args.output_dir / "episode_cv_metrics.csv")
+        if not csv_path.exists():
+            raise FileNotFoundError(f"Required file not found: {csv_path}")
+        cv_rows = load_episode_curve_csv(csv_path)
+        plot_mse_mae_curve(cv_rows, args.output_dir / "fig7_mse_mae_vs_episode.png")
+        print(f"[Done] fig7 redrawn from csv: {csv_path}")
+        return
+    
     if not args.skip_cv and not args.dataset.exists():
         raise FileNotFoundError(f"Required file not found: {args.dataset}")
+    if not args.skip_rollout:
+        for req in [args.config, args.agent_ckpt, args.surrogate_ckpt]:
+            if not req.exists():
+                raise FileNotFoundError(f"Required file not found: {req}")
 
-    args.output_dir.mkdir(parents=True, exist_ok=True)
     cfg = load_config(str(args.config)).data
     set_global_seed(args.seed)
 
