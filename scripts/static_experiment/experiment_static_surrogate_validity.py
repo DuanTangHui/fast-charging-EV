@@ -1,5 +1,5 @@
 
-"""静态代理模型有效性分析实验。
+"""静态代理模型有效性分析实验一：验证静态代理模型的拟合有效性
 
 1) 基于统计指标的交叉验证：
    - 使用带 episode 列的数据文件（dataset_with_episode.csv）
@@ -25,8 +25,9 @@ import numpy as np
 import torch
 
 current_dir = Path(__file__).resolve().parent
-root_dir = current_dir.parent
-sys.path.append(str(root_dir))
+root_dir = current_dir.parent.parent
+if str(root_dir) not in sys.path:
+    sys.path.append(str(root_dir))
 
 from src.envs.liionpack_spme_pack_env import build_pack_env
 from src.rl.agent_factory import build_agent_from_config
