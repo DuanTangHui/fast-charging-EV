@@ -197,14 +197,22 @@ def run_real_training_collect_style(
 
     metrics: List[EpisodeMetrics] = []
     dataset: List[Tuple[np.ndarray, np.ndarray, np.ndarray]] = []
-
+    crash_penalty = -5.0
     for ep in range(episodes):
         frac = ep / max(1, episodes - 1)
         sigma = ((1 - frac) * cfg.noise_sigma_start + frac * cfg.noise_sigma_end) * (high - low)
         noise = GaussianNoise(sigma=float(sigma))
 
-        state, info = env.reset(options={"soc_low": 0.1, "soc_high": 0.9})
+        try:
+            state, info = env.reset(options={"soc_low": 0.1, "soc_high": 0.8})
+        except Exception as exc:  # noqa: BLE001
+            print(f"[WARN] real collect-style reset failed at ep={ep + 1}: {exc}")
+            metrics.append(EpisodeMetrics(ep + 1, float(crash_penalty), 0.0, 0.0, 0.0, 1))
+            continue
+
         done = False
+        crashed = False
+        crash_msg = ""
         ep_reward = 0.0
         current_soc = float(info.get("SOC_pack", state[0]))
         infos: List[Dict[str, Any]] = [dict(info)]
@@ -224,7 +232,19 @@ def run_real_training_collect_style(
             accumulated_reward = 0.0
             for _ in range(cfg.hold_steps):
                 prev_soc = current_soc
-                next_state, _, terminated, truncated, next_info = env.step(action_to_exec)
+                try:
+                    next_state, _, terminated, truncated, next_info = env.step(action_to_exec)
+                except Exception as exc:  # noqa: BLE001
+                    crashed = True
+                    crash_msg = f"step failed: {exc}"
+                    accumulated_reward += float(crash_penalty)
+                    done = True
+                    crash_info = dict(info)
+                    crash_info["reward"] = float(crash_penalty)
+                    crash_info["terminated_reason"] = "sim_crash"
+                    crash_info["sim_crash"] = True
+                    infos.append(crash_info)
+                    break
                 current_soc = float(next_info["SOC_pack"])
                 v_max = float(next_info["V_cell_max"])
                 t_max = float(next_info["T_cell_max"])
@@ -257,9 +277,12 @@ def run_real_training_collect_style(
             final_delta = state[:6] - start_state[:6]
             dataset.append((start_state.copy(), action_to_exec.copy(), final_delta.copy()))
             ep_reward += accumulated_reward
+            if crashed:
+                print(f"[WARN] real collect-style episode {ep + 1} crashed. {crash_msg}")
+                break
 
         charge_time_s, v_vio, t_vio = _episode_stats(infos, env)
-        metrics.append(EpisodeMetrics(ep + 1, float(ep_reward), charge_time_s, v_vio, t_vio, 0))
+        metrics.append(EpisodeMetrics(ep + 1, float(ep_reward), charge_time_s, v_vio, t_vio, int(crashed)))
 
     return metrics, dataset
 
