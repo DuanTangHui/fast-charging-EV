@@ -31,10 +31,6 @@
   - 输出原始 CSV 与总图。
   - 会默认保存：真实基线 agent、混合方案 agent、拟合后的 surrogate 模型。
 
-- `scripts/experiment_static_surrogate_validity.py`（实验3，仓库已有实现）
-  - 静态模型回归指标评估（R2/MSE/MAE）。
-  - 在真实环境与静态代理环境中各模拟一次完整充电，输出曲线对比与原始轨迹 CSV。
-
 
 > 说明：真实物理环境训练已切换为与 `collect_real_data` 一致的交互逻辑，
 > 若物理仿真崩溃将按原始行为直接报错中断（不再吞错继续）。
