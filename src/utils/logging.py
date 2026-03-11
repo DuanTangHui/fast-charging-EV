@@ -13,6 +13,26 @@ def ensure_dir(path: str | Path) -> Path:
     path.mkdir(parents=True, exist_ok=True)
     return path
 
+def _json_default(value: Any) -> Any:
+    """Convert common numeric/container objects to JSON-serializable values."""
+
+    if isinstance(value, Path):
+        return str(value)
+
+    if hasattr(value, "item"):
+        try:
+            return value.item()
+        except (ValueError, TypeError):
+            pass
+
+    if hasattr(value, "tolist"):
+        try:
+            return value.tolist()
+        except (ValueError, TypeError):
+            pass
+
+    raise TypeError(f"Object of type {value.__class__.__name__} is not JSON serializable")
+
 
 def log_metrics(path: str | Path, metrics: Dict[str, Any]) -> None:
     """Append a metrics dictionary as JSON line."""
@@ -20,7 +40,7 @@ def log_metrics(path: str | Path, metrics: Dict[str, Any]) -> None:
     path = Path(path)
     ensure_dir(path.parent)
     with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(metrics) + "\n")
+        handle.write(json.dumps(metrics, default=_json_default) + "\n")
 
 
 def summarize_metrics(records: Iterable[Dict[str, Any]]) -> Dict[str, float]:
@@ -30,6 +50,11 @@ def summarize_metrics(records: Iterable[Dict[str, Any]]) -> Dict[str, float]:
     counts: Dict[str, int] = {}
     for record in records:
         for key, value in record.items():
+            if hasattr(value, "item"):
+                try:
+                    value = value.item()
+                except (ValueError, TypeError):
+                    pass
             if isinstance(value, (int, float)):
                 totals[key] = totals.get(key, 0.0) + float(value)
                 counts[key] = counts.get(key, 0) + 1

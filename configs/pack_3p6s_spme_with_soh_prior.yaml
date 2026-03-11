@@ -12,7 +12,7 @@ env:
   dt: 10.0 # RL每10s决策一次
   max_steps: 720 #RL每个episode最多720步
   v_max: 4.2 #单体电池最高电压
-  t_max: 318.15 #单体电池最高温度 （单位K即45℃）
+  t_max: 309.15 #单体电池最高温度 （单位K即45℃）
   pack_cells_p: 3 #电池包并联3个单体电池
   pack_cells_s: 6 #电池包串联6个单体电池
   terminate_on_violation: true #是否在违反约束时终止episode
@@ -34,8 +34,8 @@ reward:
 rl:
   algorithm: td3  # 可选: ddpg | td3 | ppo
   gamma: 0.99
-  actor_lr: 0.001
-  critic_lr: 0.0001
+  actor_lr: 0.0001
+  critic_lr: 0.001
   tau: 0.005
   batch_size: 64
   buffer_size: 50000
@@ -66,18 +66,18 @@ trainer:
   cycle0:
     real_episodes: 50
     surrogate_epochs: 25
-    policy_epochs: 100
+    policy_epochs: 200
   adaptive:
     cycles: 2
     real_episodes_per_cycle: 30
     surrogate_epochs: 20
-    policy_epochs: 100
+    policy_epochs: 200
 
     # NEW (建议显式写出来)
     policy_rollouts_per_epoch: 3
     updates_per_epoch: 50
-    noise_sigma_start: 2.0
-    noise_sigma_end: 0.1
+    noise_sigma_start: 0.2
+    noise_sigma_end: 0.05
     plot_interval: 1
 
 

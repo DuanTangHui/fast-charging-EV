@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import argparse # 解析命令行参数 
 import sys
-import os
 from pathlib import Path
 
 # 获取当前脚本的绝对路径
@@ -27,6 +26,33 @@ from src.utils.config import load_config
 from src.utils.logging import ensure_dir
 from src.utils.seeds import set_global_seed
 
+# 手动修改这里来控制从哪个老化阶段开始训练（包含该阶段）
+START_AGING_STAGE = 1
+# 手动修改这里来控制训练到哪个老化阶段结束（包含该阶段）
+END_AGING_STAGE = 100
+
+def _load_network_weights_only(agent: object, ckpt_path: Path) -> None:
+    """Load model weights only (no replay/optimizer/update_step) for adaptation experiments."""
+    ckpt = torch.load(str(ckpt_path), map_location="cpu", weights_only=False)
+
+    # TD3
+    for key, attr in [
+        ("actor", "actor"),
+        ("actor_target", "actor_target"),
+        ("critic1", "critic1"),
+        ("critic2", "critic2"),
+        ("critic1_target", "critic1_target"),
+        ("critic2_target", "critic2_target"),
+        # DDPG
+        ("target_actor", "target_actor"),
+        ("target_critic", "target_critic"),
+        ("critic", "critic"),
+        # PPO/common
+        ("actor", "actor"),
+    ]:
+        module = getattr(agent, attr, None)
+        if module is not None and key in ckpt:
+            module.load_state_dict(ckpt[key])
 
 def main() -> None:
     parser = argparse.ArgumentParser()
@@ -41,7 +67,7 @@ def main() -> None:
 
     static_ckpt = Path(config["logging"]["runs_dir"]) / "cycle0" / "static_surrogate.pt"
     if static_ckpt.exists():
-        static_surrogate = torch.load(static_ckpt)
+        static_surrogate = torch.load(static_ckpt, weights_only=False)
     else:
         static_surrogate = StaticSurrogate(
             input_dim=env.observation_space.shape[0] + 1,
@@ -63,46 +89,77 @@ def main() -> None:
         dataset = build_dataset(transitions)
         static_surrogate.fit(dataset, epochs=5)
     
-    diff_surrogate = DifferentialSurrogate(
-        input_dim=env.observation_space.shape[0] + 1,
-        output_dim=env.observation_space.shape[0] - 1,
-        hidden_sizes=config["surrogate"]["hidden_sizes"],
-        ensemble_size=config["surrogate"]["ensemble_size"],
-        lr=config["surrogate"]["learning_rate"],
-    )
-    combined = CombinedSurrogate(static_surrogate, diff_surrogate)
-
-    run_dir = ensure_dir(Path(config["logging"]["runs_dir"]) / "adaptive")
     adaptive_cfg = AdaptiveConfig(**config["trainer"]["adaptive"])
+    adaptive_cfg.cycles = 1
 
-    cycle0_dir = Path(config["logging"]["runs_dir"]) / "cycle0"
-    ckpt_path = cycle0_dir / "agent_ckpt.pt"
-    if not ckpt_path.exists():
-        raise FileNotFoundError(f"Missing checkpoint: {ckpt_path}")
+    initial_ckpt = Path(config["logging"]["runs_dir"]) / "cycle0" / "agent_ckpt.pt"
+    if not initial_ckpt.exists():
+        raise FileNotFoundError(f"Missing checkpoint: {initial_ckpt}")
     
-    agent = build_agent_from_config(
-        state_dim=env.observation_space.shape[0],
-        action_dim=1,
-        rl_config=config["rl"],
-    )
-    agent.load(str(ckpt_path))
+    # agent = build_agent_from_config(
+    #     state_dim=env.observation_space.shape[0],
+    #     action_dim=1,
+    #     rl_config=config["rl"],
+    # )
+    # agent.load(str(initial_ckpt))
 
-    train_adaptive_cycles(
-        env,
-        agent,
-        static_surrogate,
-        diff_surrogate,
-        combined,
-        reward_cfg,
-        adaptive_cfg,
-        str(run_dir),
-        soh_enabled=config["soh_prior"]["enabled"],
-        lambda_prior=config["soh_prior"]["lambda_prior"],
-        theta_dim=config["soh_prior"]["theta_dim"],
-        dummy_soh=config["soh_prior"]["dummy_soh"],
-    )
+    previous_agent_ckpt = initial_ckpt
+    if START_AGING_STAGE > 1:
+        resume_ckpt = (
+            Path(config["logging"]["runs_dir"])
+            / f"adaptive/adaptive_cycle{START_AGING_STAGE - 1}"
+            / "agent_ckpt.pt"
+        )
+        if not resume_ckpt.exists():
+            raise FileNotFoundError(
+                "Missing resume checkpoint for requested start stage: "
+                f"{resume_ckpt}. Run earlier stages first or set START_AGING_STAGE = 1."
+            )
+        previous_agent_ckpt = resume_ckpt
+    for aging_stage in range(START_AGING_STAGE, END_AGING_STAGE + 1):
+        agent = build_agent_from_config(
+            state_dim=env.observation_space.shape[0],
+            action_dim=1,
+            rl_config=config["rl"],
+        )
+        _load_network_weights_only(agent, previous_agent_ckpt)
+        
+        if hasattr(env, "set_aging_stage"):
+            env.set_aging_stage(aging_stage)
 
-    torch.save(diff_surrogate, run_dir / "diff_surrogate.pt")
+        diff_surrogate = DifferentialSurrogate(
+            input_dim=env.observation_space.shape[0] + 1,
+            output_dim=env.observation_space.shape[0] - 1,
+            hidden_sizes=config["surrogate"]["hidden_sizes"],
+            ensemble_size=config["surrogate"]["ensemble_size"],
+            lr=config["surrogate"]["learning_rate"],
+        )
+        combined = CombinedSurrogate(static_surrogate, diff_surrogate)
+
+        stage_run_dir = ensure_dir(Path(config["logging"]["runs_dir"]) / f"adaptive/adaptive_cycle{aging_stage}")
+
+        train_adaptive_cycles(
+            env,
+            agent,
+            static_surrogate,
+            diff_surrogate,
+            combined,
+            reward_cfg,
+            adaptive_cfg,
+            str(stage_run_dir),
+            soh_enabled=config["soh_prior"]["enabled"],
+            lambda_prior=config["soh_prior"]["lambda_prior"],
+            theta_dim=config["soh_prior"]["theta_dim"],
+            dummy_soh=config["soh_prior"]["dummy_soh"],
+        )
+
+        agent_ckpt = stage_run_dir / "agent_ckpt.pt"
+        if hasattr(agent, "save"):
+            agent.save(str(agent_ckpt))
+            previous_agent_ckpt = agent_ckpt
+
+        torch.save(diff_surrogate, stage_run_dir / "diff_surrogate.pt")
+        print(f"Completed adaptive cycle {aging_stage}, results saved to {stage_run_dir}")
 
 
 if __name__ == "__main__":
