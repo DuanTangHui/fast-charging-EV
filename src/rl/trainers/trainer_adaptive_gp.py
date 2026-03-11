@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Dict, List
 import warnings
 import matplotlib.pyplot as plt
@@ -188,31 +189,35 @@ def train_adaptive_cycles(
     def _save_episode_ids_csv_robust(
         transitions: List[tuple[np.ndarray, np.ndarray, np.ndarray]],
         episode_ids: List[int],
+        output_root: Path,
     ) -> None:
-        """Save transition episode ids CSV with static-trainer-compatible format.
+        """Save transition episode ids CSV per episode directory.
+        If lengths mismatch, warn and save the aligned subset for robustness."""
+        paired_len = len(transitions)
+        if len(transitions) != len(episode_ids):
+            paired_len = min(len(transitions), len(episode_ids))
+            warnings.warn(
+                "collect_real_data returned mismatched lengths for transitions "
+                f"({len(transitions)}) and transition_episode_ids ({len(episode_ids)}); "
+                "saving aligned subset only.",
+                RuntimeWarning,
+            )
 
-        Prefer strict static implementation; if lengths mismatch, warn and save
-        the aligned subset for robustness.
-        """
-        csv_path = "dataset_with_episode.csv"
-        if len(transitions) == len(episode_ids):
-            save_transitions_with_episode_to_csv(transitions, episode_ids, csv_path)
-            return
-
-        paired_len = min(len(transitions), len(episode_ids))
-        warnings.warn(
-            "collect_real_data returned mismatched lengths for transitions "
-            f"({len(transitions)}) and transition_episode_ids ({len(episode_ids)}); "
-            f"saving first {paired_len} rows to {csv_path}.",
-            RuntimeWarning,
-        )
         if paired_len == 0:
             return
-        save_transitions_with_episode_to_csv(
-            transitions[:paired_len],
-            episode_ids[:paired_len],
-            csv_path,
-        )
+        
+        episode_to_indices: Dict[int, List[int]] = {}
+        for idx, ep in enumerate(episode_ids[:paired_len]):
+            episode_to_indices.setdefault(int(ep), []).append(idx)
+
+        for ep, indices in episode_to_indices.items():
+            episode_dir = output_root / f"episode_{ep}"
+            episode_dir.mkdir(parents=True, exist_ok=True)
+
+            ep_transitions = [transitions[i] for i in indices]
+            ep_ids = [ep] * len(indices)
+            ep_csv = episode_dir / "dataset_with_episode.csv"
+            save_transitions_with_episode_to_csv(ep_transitions, ep_ids, str(ep_csv))
 
     low = float(agent.config.action_low)
     high = float(agent.config.action_high)
@@ -234,7 +239,8 @@ def train_adaptive_cycles(
             t_soft_max=config.t_soft_max,
         )
         transitions, transition_episode_ids = collect_real_data(env, reward_cfg, agent, cycle0_like_cfg)
-        _save_episode_ids_csv_robust(transitions, transition_episode_ids)
+        cycle_episode_dir = Path(run_dir) / f"cycle_{cycle}" / "episodes"
+        _save_episode_ids_csv_robust(transitions, transition_episode_ids, cycle_episode_dir)
         # ------------------------------------------------------------
         # (B) Fit DIFFERENTIAL surrogate on residual
         #     delta_hat = delta_real - delta_static
