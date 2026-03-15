@@ -27,7 +27,7 @@ from src.utils.logging import ensure_dir
 from src.utils.seeds import set_global_seed
 
 # 手动修改这里来控制从哪个老化阶段开始训练（包含该阶段）
-START_AGING_STAGE = 1
+START_AGING_STAGE = 14
 # 手动修改这里来控制训练到哪个老化阶段结束（包含该阶段）
 END_AGING_STAGE = 100
 

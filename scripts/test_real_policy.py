@@ -89,8 +89,24 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     # 需要传入原本的 config 文件以构建环境
     parser.add_argument("--config", required=True, help="Path to the config.yaml used for training")
-    # 指定要测试的 policy.pt 路径
-    parser.add_argument("--policy", required=True, help="Path to the policy.pt file")
+    # 自动扫描 runs/adaptive/adaptive_cyclexx/agent_ckpt.pt
+    parser.add_argument(
+        "--runs-root",
+        default="runs/adaptive",
+        help="Root directory that contains adaptive_cycle*/agent_ckpt.pt",
+    )
+    parser.add_argument(
+        "--start-cycle",
+        type=int,
+        default=1,
+        help="Starting cycle index, inclusive",
+    )
+    parser.add_argument(
+        "--end-cycle",
+        type=int,
+        default=50,
+        help="Ending cycle index, inclusive",
+    )
     # 可选：是否禁用安全守卫 (纯测神经网络性能)
     parser.add_argument("--no-guard", action="store_true", help="Disable safety guard")
     args = parser.parse_args()
@@ -103,7 +119,7 @@ def main() -> None:
     # 2. 构建真实环境 (LiionPack)
     print("Building environment...")
     env = build_pack_env(config["env"])
-    env.set_aging_stage(1)
+    env.set_aging_stage(4)
     # 3. 初始化 Agent (结构必须与训练时一致)
     print("Initializing Agent...")
     # 注意：action_dim 这里硬编码为 1，与你训练脚本一致
@@ -113,94 +129,82 @@ def main() -> None:
         rl_config=config["rl"],
     )
 
-    # 4. 加载权重
-    policy_path = Path(args.policy)
-    if not policy_path.exists():
-        raise FileNotFoundError(f"Policy file not found: {policy_path}")
-    
-    print(f"Loading policy weights from {policy_path}...")
-    try:
-        agent.load(str(policy_path), map_location=str(DEVICE))
-        print("✅ Policy and Normalizer loaded successfully.")
-    except Exception as e:
-        print(f"❌ Failed to load policy: {e}")
-    # checkpoint = torch.load(policy_path, map_location=DEVICE, weights_only=False)
-
-    # # # [修改] 兼容加载逻辑
-    # if isinstance(checkpoint, dict) and "actor" in checkpoint:
-    #     # A. 加载神经网络权重
-    #     agent.actor.load_state_dict(checkpoint["actor"])
-    #     print("✅ Actor weights loaded.")
-        
-    #     # B. 加载归一化统计量 (关键修复)
-    #     if "state_norm" in checkpoint:
-    #         agent.state_norm = checkpoint["state_norm"]
-    #         # print(f"✅ Normalizer loaded. (Count: {agent.state_norm.count})")
-    #     else:
-    #         print("❌ WARNING: Checkpoint 中没有 state_norm！Agent 可能会因为输入数值过大而失效 (输出0A)。")
-    # else:
-    #     # 兼容旧格式 (如果有旧模型还想跑)
-    #     agent.actor.load_state_dict(checkpoint)
-    #     print("⚠️ Loaded legacy state_dict only. Normalizer missing!")
-
-    agent.actor.eval() # 切换到评估模式
-
-    # 5. 开始测试循环
-    print("Starting inference...")
-    state, info = env.reset()
-    done = False
-    
-    logs = {"soc": [], "voltage": [], "current": [], "reward": []}
-    total_reward = 0.0
-    steps = 0
+    runs_root = Path(args.runs_root)
     
     # 动作范围
     low = config["rl"]["action_low"]
     high = config["rl"]["action_high"]
 
-    while not done:
-        # A. 神经网络预测 (确定性策略)
-        # agent.act 内部已经包含归一化处理(如果有)和 no_grad
-        action = agent.act(state) 
-        raw_action = float(action[0])
+    for cycle in range(args.start_cycle, args.end_cycle + 1):
+        policy_path = runs_root / f"adaptive_cycle{cycle}" / "agent_ckpt.pt"
+        if not policy_path.exists():
+            print(f"⚠️ Skip cycle {cycle}: policy file not found: {policy_path}")
+            continue
 
-        # B. 安全守卫 (可选)
-        if not args.no_guard:
-            final_action = guard_action(raw_action, info, low, high)
-        else:
-            final_action = raw_action
-            # 依然需要 clip 防止超出物理极限
-            final_action = float(np.clip(final_action, low, high))
+        # 4. 加载权重
+        print(f"\n=== Cycle {cycle} ===")
+        print(f"Loading policy weights from {policy_path}...")
+        try:
+            agent.load(str(policy_path), map_location=str(DEVICE))
+            print("✅ Policy and Normalizer loaded successfully.")
+        except Exception as e:
+            print(f"❌ Failed to load policy for cycle {cycle}: {e}")
+            continue
 
-        # 包装成 array
-        action_vec = np.array([final_action], dtype=np.float32)
+        agent.actor.eval()  # 切换到评估模式
 
-        # C. 环境执行
-        next_state, reward, terminated, truncated, next_info = env.step(action_vec)
+        # 5. 开始测试循环
+        print("Starting inference...")
+        state, info = env.reset()
+        done = False
 
-        # D. 记录数据
-        # 注意：这里我们取 next_info 里的真实数据
-        logs["soc"].append(next_info.get("SOC_pack", 0.0))
-        logs["voltage"].append(next_info.get("V_cell_max", 0.0))
-        # 记录真实执行的电流 (I_pack_true)，而不是我们设定的电流，看看是否有偏差
-        logs["current"].append(next_info.get("I_pack_true", final_action))
-        logs["reward"].append(reward)
+        logs = {"soc": [], "voltage": [], "current": [], "reward": []}
+        total_reward = 0.0
+        steps = 0
 
-        state = next_state
-        info = next_info
-        total_reward += reward
-        steps += 1
-        
-        if terminated or truncated:
-            done = True
-            reason = info.get('terminated_reason', 'Unknown')
-            print(f"Episode finished at step {steps}. Reason: {reason}")
+        while not done:
+            # A. 神经网络预测 (确定性策略)
+            # agent.act 内部已经包含归一化处理(如果有)和 no_grad
+            action = agent.act(state)
+            raw_action = float(action[0])
 
-    print(f"Test Complete. Total Reward: {total_reward:.2f}, Final SOC: {logs['soc'][-1]:.4f}")
+            # B. 安全守卫 (可选)
+            if not args.no_guard:
+                final_action = guard_action(raw_action, info, low, high)
+            else:
+                final_action = raw_action
+                # 依然需要 clip 防止超出物理极限
+                final_action = float(np.clip(final_action, low, high))
 
-    # 6. 画图
-    save_img_path = policy_path.parent / "test_result.png"
-    plot_results(logs, dt=config["env"]["dt"], save_path=save_img_path)
+            # 包装成 array
+            action_vec = np.array([final_action], dtype=np.float32)
+
+            # C. 环境执行
+            next_state, reward, terminated, truncated, next_info = env.step(action_vec)
+
+            # D. 记录数据
+            # 注意：这里我们取 next_info 里的真实数据
+            logs["soc"].append(next_info.get("SOC_pack", 0.0))
+            logs["voltage"].append(next_info.get("V_cell_max", 0.0))
+            # 记录真实执行的电流 (I_pack_true)，而不是我们设定的电流，看看是否有偏差
+            logs["current"].append(next_info.get("I_pack_true", final_action))
+            logs["reward"].append(reward)
+
+            state = next_state
+            info = next_info
+            total_reward += reward
+            steps += 1
+
+            if terminated or truncated:
+                done = True
+                reason = info.get("terminated_reason", "Unknown")
+                print(f"Episode finished at step {steps}. Reason: {reason}")
+
+        print(f"Test Complete. Total Reward: {total_reward:.2f}, Final SOC: {logs['soc'][-1]:.4f}")
+
+        # 6. 画图
+        save_img_path = policy_path.parent / "test_result.png"
+        plot_results(logs, dt=config["env"]["dt"], save_path=save_img_path)
 
 if __name__ == "__main__":
     main()
