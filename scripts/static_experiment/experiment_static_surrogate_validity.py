@@ -383,8 +383,8 @@ def plot_rollout_compare(real: Dict[str, np.ndarray], gp: Dict[str, np.ndarray],
 
     for key, ylabel, fname in series:
         fig_sub, ax_sub = plt.subplots(figsize=sub_size)
-        ax_sub.plot(tr, real[key], color=NATURE_BLUE, label="真实环境", linewidth=1.6)
-        ax_sub.plot(tg, gp[key], "--", color=NATURE_GREEN, label="静态GP", linewidth=1.6)
+        ax_sub.plot(tr, real[key], color=NATURE_BLUE, label="真实仿真环境", linewidth=1.6)
+        ax_sub.plot(tg, gp[key], "--", color=NATURE_GREEN, label="静态代理模型", linewidth=1.6)
         ax_sub.set_xlabel("步数", fontproperties=ZH_FONT)
         ax_sub.set_ylabel(ylabel, fontproperties=ZH_FONT)
         ax_sub.grid(True, color=GRID_COLOR, alpha=0.7)

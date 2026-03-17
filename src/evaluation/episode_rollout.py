@@ -13,10 +13,12 @@ def rollout_env(
     env: BasePackEnv,
     policy: Callable[[np.ndarray], np.ndarray],
     reward_cfg: PaperRewardConfig,
+    reset_seed: int | None = None,
+    reset_options: Dict | None = None,
 ) -> Tuple[float, List[Dict]]:
     """Rollout in a real environment."""
     
-    state, info = env.reset()
+    state, info = env.reset(seed=reset_seed, options=reset_options)
 
     infos: List[Dict] = [info]
     total_reward = 0.0

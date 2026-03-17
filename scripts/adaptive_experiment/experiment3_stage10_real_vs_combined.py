@@ -139,16 +139,7 @@ def main() -> None:
 
     state0, _ = env.reset(seed=777)
     t2 = time.perf_counter()
-    r_comb, infos_comb = rollout_surrogate(
-        state=state0.copy(),
-        surrogate=combined.predict,
-        policy=guarded_policy(comb_agent, low, high),
-        horizon=int(cfg["env"]["max_steps"]),
-        reward_cfg=reward_cfg,
-        dt=float(cfg["env"]["dt"]),
-        v_max=float(cfg["env"]["v_max"]),
-        t_max=float(cfg["env"]["t_max"]),
-    )
+    r_comb, infos_comb = rollout_env(env, guarded_policy(comb_agent, low, high), reward_cfg)
     sim_comb_sec = time.perf_counter() - t2
 
     real_curve = infos_to_curve(infos_real)

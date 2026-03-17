@@ -421,7 +421,7 @@ def collect_real_data(
         noise = GaussianNoise(sigma=float(sigma))
 
         # state, info = env.reset()
-        state, info = env.reset(options={"soc_low": 0.1, "soc_high": 0.9})
+        state, info = env.reset(options={"soc_low": 0.1, "soc_high": 0.5})
         done = False
 
         # 统计本回合奖励

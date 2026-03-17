@@ -83,7 +83,7 @@ def plot_results(logs, dt, save_path=None):
     if save_path:
         plt.savefig(save_path)
         print(f"Plot saved to {save_path}")
-    plt.show()
+    # plt.show()
 
 def main() -> None:
     parser = argparse.ArgumentParser()
@@ -98,7 +98,7 @@ def main() -> None:
     parser.add_argument(
         "--start-cycle",
         type=int,
-        default=1,
+        default=25,
         help="Starting cycle index, inclusive",
     )
     parser.add_argument(

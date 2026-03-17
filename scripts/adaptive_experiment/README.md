@@ -19,16 +19,16 @@ python scripts/adaptive_experiment/experiment1_diff_cv.py
 
 ---
 
-## 实验2：25°C下老化阶段1~100，静态代理 vs 组合代理
+## 实验2：25°C下老化阶段1~50，静态代理 vs 组合代理
 
 ```bash
 python scripts/adaptive_experiment/experiment2_stage100_comparison.py \
-  --runs-dir runs --start-stage 1 --end-stage 100
+  --runs-dir runs --start-stage 1 --end-stage 50
 ```
 
 输出：
-- `runs/adaptive_experiment/result2/exp2_stage1_100_metrics.csv`
-- `runs/adaptive_experiment/result2/exp2_stage1_100_comparison.png`
+- `runs/adaptive_experiment/result2/exp2_stage1_50_metrics.csv`
+- `runs/adaptive_experiment/result2/exp2_stage1_50_comparison.png`
 
 ---
 
@@ -44,3 +44,5 @@ python scripts/adaptive_experiment/experiment3_stage10_real_vs_combined.py \
 - `runs/adaptive_experiment/result3/exp3_stage10_summary.csv`
 - `runs/adaptive_experiment/result3/exp3_real_training_metrics.csv`
 - `runs/adaptive_experiment/result3/exp3_stage10_real_vs_combined_curves.png`
+画图：
+python scripts/static_experiment/plot_truevsstatic_agents.py --configs/pack_3p6s_spme_with_soh_prior.yaml  --seed 7  --real-agent-ckpt runs/adaptive_experiment/result3/real_env_stage10_ep630_agent_ckpt.pt --mix-agent-ckpt  --output-dir runs/adaptive_experiment/result3/pdf_plots

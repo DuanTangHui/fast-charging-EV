@@ -80,6 +80,7 @@ python scripts/evaluate_policy.py --config configs/pack_3p6s_spme.yaml --ckpt ru
 
 ```bash
 python scripts/test_real_policy.py --config configs/pack_3p6s_spme.yaml --policy runs/cycle0/agent_ckpt.pt
+python scripts/test_real_policy.py --config configs/pack_3p6s_spme.yaml --runs-root runs/adaptive
 ```
 
 可选参数：

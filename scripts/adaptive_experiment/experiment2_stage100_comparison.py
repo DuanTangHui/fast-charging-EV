@@ -1,4 +1,4 @@
-"""实验2：25°C下，静态代理 vs 组合代理在老化1~100阶段的性能对比。"""
+"""实验2：25°C下，静态策略 vs 组合策略在老化1~50阶段的真实环境性能对比。"""
 from __future__ import annotations
 
 import argparse
@@ -9,7 +9,6 @@ from typing import Dict, List
 
 import matplotlib.pyplot as plt
 import numpy as np
-import torch
 
 CURRENT_DIR = Path(__file__).resolve().parent
 ROOT_DIR = CURRENT_DIR.parent.parent
@@ -17,10 +16,9 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.append(str(ROOT_DIR))
 
 from src.envs.liionpack_spme_pack_env import build_pack_env
-from src.evaluation.episode_rollout import rollout_surrogate
+from src.evaluation.episode_rollout import rollout_env
 from src.rewards.paper_reward import PaperRewardConfig
 from src.rl.agent_factory import build_agent_from_config
-from src.surrogate.gp_combined import CombinedSurrogate
 from src.utils.config import load_config
 from src.utils.seeds import set_global_seed
 
@@ -76,7 +74,7 @@ def plot_curves(rows: List[Dict[str, float]], out_dir: Path) -> None:
     axs[1, 1].grid(alpha=0.3)
 
     plt.tight_layout()
-    plt.savefig(out_dir / "exp2_stage1_100_comparison.png", dpi=180)
+    plt.savefig(out_dir / "exp2_stage1_50_comparison.png", dpi=180)
     plt.close(fig)
 
 
@@ -85,7 +83,7 @@ def main() -> None:
     p.add_argument("--config", default="configs/pack_3p6s_spme_with_soh_prior.yaml")
     p.add_argument("--runs-dir", default="runs")
     p.add_argument("--start-stage", type=int, default=1)
-    p.add_argument("--end-stage", type=int, default=100)
+    p.add_argument("--end-stage", type=int, default=50)
     p.add_argument("--seed", type=int, default=123)
     p.add_argument("--output-dir", default="runs/adaptive_experiment/result2")
     args = p.parse_args()
@@ -97,10 +95,14 @@ def main() -> None:
     reward_cfg = PaperRewardConfig(**cfg["reward"])
 
     runs_dir = Path(args.runs_dir)
-    static_ckpt = runs_dir / "cycle0" / "static_surrogate.pt"
+    static_ckpt = runs_dir / "cycle0" / "agent_ckpt.pt"
     if not static_ckpt.exists():
         raise FileNotFoundError(f"Missing static surrogate: {static_ckpt}")
-    static_surrogate = torch.load(static_ckpt, map_location="cpu", weights_only=False)
+    
+    static_agent = build_agent_from_config(env.observation_space.shape[0], 1, cfg["rl"])
+    static_agent.load(str(static_ckpt), map_location="cpu")
+    static_agent.actor.eval()
+    static_policy = make_policy(static_agent, float(cfg["rl"]["action_low"]), float(cfg["rl"]["action_high"]))
 
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -108,8 +110,7 @@ def main() -> None:
     rows: List[Dict[str, float]] = []
     for stage in range(args.start_stage, args.end_stage + 1):
         agent_ckpt = runs_dir / "adaptive" / f"adaptive_cycle{stage}" / "agent_ckpt.pt"
-        diff_ckpt = runs_dir / "adaptive" / f"adaptive_cycle{stage}" / "diff_surrogate.pt"
-        if (not agent_ckpt.exists()) or (not diff_ckpt.exists()):
+        if not agent_ckpt.exists():
             print(f"[WARN] stage={stage} skipped (missing ckpt)")
             continue
 
@@ -120,23 +121,14 @@ def main() -> None:
         agent.load(str(agent_ckpt), map_location="cpu")
         agent.actor.eval()
 
-        diff_surrogate = torch.load(diff_ckpt, map_location="cpu", weights_only=False)
-        combined = CombinedSurrogate(static_surrogate, diff_surrogate)
+        combined_policy = make_policy(agent, float(cfg["rl"]["action_low"]), float(cfg["rl"]["action_high"]))
 
-        state0, _ = env.reset(seed=args.seed + stage)
-        policy = make_policy(agent, float(cfg["rl"]["action_low"]), float(cfg["rl"]["action_high"]))
-        horizon = int(cfg["env"]["max_steps"])
-
-        r_static, infos_static = rollout_surrogate(
-            state=state0.copy(), surrogate=static_surrogate.predict, policy=policy,
-            horizon=horizon, reward_cfg=reward_cfg, dt=float(cfg["env"]["dt"]),
-            v_max=float(cfg["env"]["v_max"]), t_max=float(cfg["env"]["t_max"]),
-        )
-        r_comb, infos_comb = rollout_surrogate(
-            state=state0.copy(), surrogate=combined.predict, policy=policy,
-            horizon=horizon, reward_cfg=reward_cfg, dt=float(cfg["env"]["dt"]),
-            v_max=float(cfg["env"]["v_max"]), t_max=float(cfg["env"]["t_max"]),
-        )
+        # 在真实物理仿真环境中评估两个策略（避免在各自 surrogate 上各测各的偏差）
+        stage_seed = args.seed + stage
+        set_global_seed(stage_seed)
+        r_static, infos_static = rollout_env(env, static_policy, reward_cfg, reset_seed=stage_seed)
+        set_global_seed(stage_seed)
+        r_comb, infos_comb = rollout_env(env, combined_policy, reward_cfg, reset_seed=stage_seed)
 
         s1 = episode_stats(infos_static, env.v_max, env.t_max)
         s2 = episode_stats(infos_comb, env.v_max, env.t_max)
@@ -157,7 +149,7 @@ def main() -> None:
     if not rows:
         raise RuntimeError("No stages evaluated. Check runs directory.")
 
-    csv_path = out_dir / "exp2_stage1_100_metrics.csv"
+    csv_path = out_dir / "exp2_stage1_50_metrics.csv"
     with csv_path.open("w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
         w.writeheader()

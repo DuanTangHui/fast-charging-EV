@@ -9,6 +9,10 @@ import argparse
 import csv
 import re
 import sys
+import numpy as np
+import matplotlib.pyplot as plt
+from typing import List, Dict
+from pathlib import Path
 from pathlib import Path
 from typing import Dict, List, Tuple
 
@@ -27,15 +31,22 @@ from src.surrogate.gp_differential import DifferentialSurrogate
 from src.utils.config import load_config
 from src.utils.seeds import set_global_seed
 
+# 设置中文字体，防止图表中的中文显示为方块
+plt.rcParams['font.sans-serif'] = ['SimHei', 'Songti SC', 'Arial Unicode MS']
+plt.rcParams['axes.unicode_minus'] = False
 
 def load_dataset_with_episode(path: Path) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     data = np.genfromtxt(path, delimiter=",", names=True, dtype=np.float32)
     if "episode" not in data.dtype.names:
         raise ValueError(f"{path} must contain an 'episode' column")
-    states = np.stack([data[f"s_{i}"] for i in range(7)], axis=1)
-    actions = data["action"].reshape(-1, 1)
-    deltas = np.stack([data[f"d_{i}"] for i in range(6)], axis=1)
-    episodes = data["episode"].astype(np.int32)
+    # NOTE:
+    # np.genfromtxt returns a 0-d structured scalar when the csv only has one
+    # data row, making stack(..., axis=1) fail with AxisError. Normalizing each
+    # column to >=1D keeps both single-row and multi-row datasets consistent.
+    states = np.stack([np.atleast_1d(data[f"s_{i}"]) for i in range(7)], axis=1)
+    actions = np.atleast_1d(data["action"]).reshape(-1, 1)
+    deltas = np.stack([np.atleast_1d(data[f"d_{i}"]) for i in range(6)], axis=1)
+    episodes = np.atleast_1d(data["episode"]).astype(np.int32)
     return states, actions, deltas, episodes
 
 
@@ -128,34 +139,87 @@ def evaluate_stage_cv(
         "mae": float(np.mean([m["mae"] for m in rep_metrics])),
     }
 
-
 def plot_metrics(rows: List[Dict[str, float]], out_dir: Path) -> None:
     stages = np.array([int(r["stage"]) for r in rows])
     r2 = np.array([r["r2"] for r in rows])
     mse = np.array([r["mse"] for r in rows])
     mae = np.array([r["mae"] for r in rows])
 
-    plt.figure(figsize=(8, 5))
-    plt.plot(stages, r2, marker="o")
-    plt.xlabel("Aging Stage")
-    plt.ylabel("R2")
-    plt.title("R2 vs Aging Stage")
-    plt.grid(True, alpha=0.3)
-    plt.tight_layout()
-    plt.savefig(out_dir / "exp1_r2_vs_stage.png", dpi=180)
-    plt.close()
+    # 确保输出目录存在
+    out_dir.mkdir(parents=True, exist_ok=True)
 
-    plt.figure(figsize=(8, 5))
-    plt.plot(stages, mse, marker="o", label="MSE")
-    plt.plot(stages, mae, marker="s", label="MAE")
-    plt.xlabel("Aging Stage")
-    plt.ylabel("Error")
-    plt.title("MSE/MAE vs Aging Stage")
-    plt.grid(True, alpha=0.3)
-    plt.legend()
-    plt.tight_layout()
-    plt.savefig(out_dir / "exp1_mse_mae_vs_stage.png", dpi=180)
-    plt.close()
+    # ==========================================
+    # 1. 绘制 R2 vs Aging Stage
+    # ==========================================
+    fig1, ax1 = plt.subplots(figsize=(8, 5))
+    
+    # 绘制带白色描边的数据点，提升质感
+    ax1.plot(stages, r2, marker="o", markersize=8, linewidth=2.5, 
+             color="tab:blue", markeredgecolor="white", markeredgewidth=1.5)
+    
+    ax1.set_xlabel("老化阶段 (Aging Stage)", fontsize=12)
+    # 使用 LaTeX 语法渲染 R 平方
+    ax1.set_ylabel(r"决定系数 ($R^2$)", fontsize=12) 
+    ax1.set_title("模型拟合度随老化阶段的变化", fontsize=14, fontweight="bold")
+    ax1.grid(True, linestyle="--", alpha=0.5)
+    
+    # 优化 x 轴刻度，确保阶段显示为整数
+    ax1.set_xticks(stages)
+    
+    fig1.tight_layout()
+    fig1.savefig(out_dir / "exp1_r2_vs_stage.png", dpi=300, bbox_inches="tight")
+    plt.close(fig1)
+
+    # ==========================================
+    # 2. 绘制 MSE/MAE vs Aging Stage
+    # ==========================================
+    fig2, ax2 = plt.subplots(figsize=(8, 5))
+    
+    ax2.plot(stages, mse, marker="o", markersize=8, linewidth=2.5, 
+             label="均方误差 (MSE)", color="tab:orange", markeredgecolor="white", markeredgewidth=1.5)
+    ax2.plot(stages, mae, marker="s", markersize=8, linewidth=2.5, 
+             label="平均绝对误差 (MAE)", color="tab:green", markeredgecolor="white", markeredgewidth=1.5)
+    
+    ax2.set_xlabel("老化阶段 (Aging Stage)", fontsize=12)
+    ax2.set_ylabel("误差值 (Error)", fontsize=12)
+    ax2.set_title("模型预测误差随老化阶段的变化", fontsize=14, fontweight="bold")
+    ax2.grid(True, linestyle="--", alpha=0.5)
+    ax2.legend(fontsize=11, loc="best")
+    
+    ax2.set_xticks(stages)
+
+    fig2.tight_layout()
+    fig2.savefig(out_dir / "exp1_mse_mae_vs_stage.png", dpi=300, bbox_inches="tight")
+    plt.close(fig2)
+    
+    print(f"[Done] 评估指标图表已保存至: {out_dir}")
+# def plot_metrics(rows: List[Dict[str, float]], out_dir: Path) -> None:
+#     stages = np.array([int(r["stage"]) for r in rows])
+#     r2 = np.array([r["r2"] for r in rows])
+#     mse = np.array([r["mse"] for r in rows])
+#     mae = np.array([r["mae"] for r in rows])
+
+#     plt.figure(figsize=(8, 5))
+#     plt.plot(stages, r2, marker="o")
+#     plt.xlabel("Aging Stage")
+#     plt.ylabel("R2")
+#     plt.title("R2 vs Aging Stage")
+#     plt.grid(True, alpha=0.3)
+#     plt.tight_layout()
+#     plt.savefig(out_dir / "exp1_r2_vs_stage.png", dpi=180)
+#     plt.close()
+
+#     plt.figure(figsize=(8, 5))
+#     plt.plot(stages, mse, marker="o", label="MSE")
+#     plt.plot(stages, mae, marker="s", label="MAE")
+#     plt.xlabel("Aging Stage")
+#     plt.ylabel("Error")
+#     plt.title("MSE/MAE vs Aging Stage")
+#     plt.grid(True, alpha=0.3)
+#     plt.legend()
+#     plt.tight_layout()
+#     plt.savefig(out_dir / "exp1_mse_mae_vs_stage.png", dpi=180)
+#     plt.close()
 
 
 def main() -> None:
@@ -201,8 +265,8 @@ def main() -> None:
         mask = ep <= args.max_episode
         s, a, d = s[mask], a[mask], d[mask]
         if s.shape[0] < args.k_folds:
-            raise ValueError(f"Insufficient samples for stage={stage}, n={s.shape[0]}")
-
+            print(f"[WARNING] ⚠️ 跳过 stage={stage}：样本不足 (n={s.shape[0]} < k_folds={args.k_folds})。")
+            continue
         m = evaluate_stage_cv(
             s,
             a,

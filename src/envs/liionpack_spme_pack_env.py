@@ -410,7 +410,7 @@ class LiionpackSPMEPackEnv(BasePackEnv):
         violation = viol_hard                      # ✅ violation 只管硬约束
         truncated = bool(viol_internal)            # ✅ 内部失败用 truncated
 
-        soc_done = soc_pack >= 0.995
+        soc_done = soc_pack >= 0.80
         horizon_done = self._lp_step >= self.max_steps
         # 终止条件  
         terminated = horizon_done or soc_done or (self.terminate_on_violation and violation)
