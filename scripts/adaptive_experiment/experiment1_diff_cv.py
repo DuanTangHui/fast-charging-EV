@@ -31,9 +31,6 @@ from src.surrogate.gp_differential import DifferentialSurrogate
 from src.utils.config import load_config
 from src.utils.seeds import set_global_seed
 
-# 设置中文字体，防止图表中的中文显示为方块
-plt.rcParams['font.sans-serif'] = ['SimHei', 'Songti SC', 'Arial Unicode MS']
-plt.rcParams['axes.unicode_minus'] = False
 
 def load_dataset_with_episode(path: Path) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     data = np.genfromtxt(path, delimiter=",", names=True, dtype=np.float32)
@@ -140,6 +137,53 @@ def evaluate_stage_cv(
     }
 
 def plot_metrics(rows: List[Dict[str, float]], out_dir: Path) -> None:
+    import logging
+    import os
+    import numpy as np
+    import matplotlib.pyplot as plt
+    from matplotlib import font_manager
+    from matplotlib.ticker import MultipleLocator  # 新增：用于控制刻度间隔
+
+    # 1. 强制屏蔽字体内部元数据警告
+    logging.getLogger('fontTools.subset').level = logging.ERROR
+
+    # 2. 加载宋体
+    simsun_path = r'C:\Windows\Fonts\simsun.ttc'
+    if os.path.exists(simsun_path):
+        font_manager.fontManager.addfont(simsun_path)
+
+    # 3. 顶刊全局标准配置
+    plt.rcParams.update({
+        "font.family": "serif",
+        "font.serif": ["SimSun"], 
+        "mathtext.fontset": "custom",
+        "mathtext.rm": "Times New Roman",
+        "pdf.fonttype": 42,
+        "ps.fonttype": 42,
+        "axes.unicode_minus": False,
+        
+        # 边框与刻度
+        "axes.spines.top": True,
+        "axes.spines.right": True,
+        "axes.linewidth": 1.0,
+        "xtick.major.width": 1.0,
+        "ytick.major.width": 1.0,
+        "xtick.direction": "in",
+        "ytick.direction": "in",
+        
+        # 严格的 10.5pt 字号体系 (对应 Word 五号字)
+        "font.size": 10.5,                     
+        "axes.labelsize": 10.5,
+        "xtick.labelsize": 10.5,
+        "ytick.labelsize": 10.5,
+        "legend.fontsize": 9  
+    })
+
+    # Nature 经典学术配色
+    color_r2 = '#3C5488'    # 深蓝色
+    color_mse = '#E64B35'   # 红色
+    color_mae = '#00A087'   # 蓝绿色
+
     stages = np.array([int(r["stage"]) for r in rows])
     r2 = np.array([r["r2"] for r in rows])
     mse = np.array([r["mse"] for r in rows])
@@ -147,52 +191,80 @@ def plot_metrics(rows: List[Dict[str, float]], out_dir: Path) -> None:
 
     # 确保输出目录存在
     out_dir.mkdir(parents=True, exist_ok=True)
+    
+    # 物理尺寸规范：单张局部图 8.0cm × 5.5cm
+    cm_to_inch = 1 / 2.54
+    figsize_single = (8.0 * cm_to_inch, 5.5 * cm_to_inch)
 
     # ==========================================
     # 1. 绘制 R2 vs Aging Stage
     # ==========================================
-    fig1, ax1 = plt.subplots(figsize=(8, 5))
+    fig1, ax1 = plt.subplots(figsize=figsize_single)
     
-    # 绘制带白色描边的数据点，提升质感
-    ax1.plot(stages, r2, marker="o", markersize=8, linewidth=2.5, 
-             color="tab:blue", markeredgecolor="white", markeredgewidth=1.5)
+    ax1.plot(stages, r2, marker="o", markersize=5, linewidth=1.5, 
+             color=color_r2, markeredgecolor="white", markeredgewidth=0.8)
     
-    ax1.set_xlabel("老化阶段 (Aging Stage)", fontsize=12)
-    # 使用 LaTeX 语法渲染 R 平方
-    ax1.set_ylabel(r"决定系数 ($R^2$)", fontsize=12) 
-    ax1.set_title("模型拟合度随老化阶段的变化", fontsize=14, fontweight="bold")
-    ax1.grid(True, linestyle="--", alpha=0.5)
+    ax1.set_xlabel(r"老化阶段")
+    ax1.set_ylabel(r"决定系数 ($R^2$)") 
     
-    # 优化 x 轴刻度，确保阶段显示为整数
-    ax1.set_xticks(stages)
+    ax1.grid(True, linestyle=":", alpha=0.6, color="#CCCCCC")
     
+    # 【核心修改点】设置 x 轴刻度为主刻度每 5 个单位一标
+    ax1.xaxis.set_major_locator(MultipleLocator(5))
+    ax1.set_xlim(left=0, right=max(stages) + 1) # 适当留白，防止最右侧点贴边
+    
+    ax1.tick_params(axis='x', pad=2, length=3)
+    ax1.tick_params(axis='y', pad=2, length=3)
+    for label in ax1.get_xticklabels() + ax1.get_yticklabels():
+        label.set_fontname('Times New Roman')
+
     fig1.tight_layout()
+    fig1.savefig(out_dir / "exp1_r2_vs_stage.pdf", format='pdf', bbox_inches="tight")
     fig1.savefig(out_dir / "exp1_r2_vs_stage.png", dpi=300, bbox_inches="tight")
     plt.close(fig1)
 
     # ==========================================
     # 2. 绘制 MSE/MAE vs Aging Stage
     # ==========================================
-    fig2, ax2 = plt.subplots(figsize=(8, 5))
+    fig2, ax2 = plt.subplots(figsize=figsize_single)
     
-    ax2.plot(stages, mse, marker="o", markersize=8, linewidth=2.5, 
-             label="均方误差 (MSE)", color="tab:orange", markeredgecolor="white", markeredgewidth=1.5)
-    ax2.plot(stages, mae, marker="s", markersize=8, linewidth=2.5, 
-             label="平均绝对误差 (MAE)", color="tab:green", markeredgecolor="white", markeredgewidth=1.5)
+    ax2.plot(stages, mse, marker="o", markersize=5, linewidth=1.5, 
+             label=r"均方误差", color=color_mse, markeredgecolor="white", markeredgewidth=0.8)
+    ax2.plot(stages, mae, marker="s", markersize=5, linewidth=1.5, 
+             label=r"平均绝对误差", color=color_mae, markeredgecolor="white", markeredgewidth=0.8)
     
-    ax2.set_xlabel("老化阶段 (Aging Stage)", fontsize=12)
-    ax2.set_ylabel("误差值 (Error)", fontsize=12)
-    ax2.set_title("模型预测误差随老化阶段的变化", fontsize=14, fontweight="bold")
-    ax2.grid(True, linestyle="--", alpha=0.5)
-    ax2.legend(fontsize=11, loc="best")
+    ax2.set_xlabel(r"老化阶段")
+    ax2.set_ylabel(r"误差值")
     
-    ax2.set_xticks(stages)
+    ax2.grid(True, linestyle=":", alpha=0.6, color="#CCCCCC")
+    
+    # 【核心修改点】设置 x 轴刻度为主刻度每 5 个单位一标
+    ax2.xaxis.set_major_locator(MultipleLocator(5))
+    ax2.set_xlim(left=0, right=max(stages) + 1) # 适当留白
+    
+    ax2.legend(
+        loc='best', 
+        ncol=1,                    
+        frameon=True,              
+        facecolor='white',         
+        framealpha=0.9,            
+        edgecolor=(0.7, 0.7, 0.7, 0.5),
+        borderpad=0.4,       
+        handletextpad=0.3,   
+        labelspacing=0.4
+    )
+    
+    ax2.tick_params(axis='x', pad=2, length=3)
+    ax2.tick_params(axis='y', pad=2, length=3)
+    for label in ax2.get_xticklabels() + ax2.get_yticklabels():
+        label.set_fontname('Times New Roman')
 
     fig2.tight_layout()
+    fig2.savefig(out_dir / "exp1_mse_mae_vs_stage.pdf", format='pdf', bbox_inches="tight")
     fig2.savefig(out_dir / "exp1_mse_mae_vs_stage.png", dpi=300, bbox_inches="tight")
     plt.close(fig2)
     
-    print(f"[Done] 评估指标图表已保存至: {out_dir}")
+    print(f"[Done] 评估指标图表(5刻度间隔版)已保存至: {out_dir}")
 # def plot_metrics(rows: List[Dict[str, float]], out_dir: Path) -> None:
 #     stages = np.array([int(r["stage"]) for r in rows])
 #     r2 = np.array([r["r2"] for r in rows])
@@ -225,7 +297,7 @@ def plot_metrics(rows: List[Dict[str, float]], out_dir: Path) -> None:
 def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument("--config", default="configs/pack_3p6s_spme_with_soh_prior.yaml")
-    p.add_argument("--static-surrogate", default="runs/cycle0/static_surrogate.pt")
+    p.add_argument("--static-surrogate", default="runs/cycle00/static_surrogate.pt")
     p.add_argument("--datasets", nargs="+", default=None)
     p.add_argument("--adaptive-root", default="runs/adaptive")
     p.add_argument(

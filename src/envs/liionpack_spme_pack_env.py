@@ -282,9 +282,16 @@ class LiionpackSPMEPackEnv(BasePackEnv):
         step = self._lp_step
         self._rm.protocol[step] = float(current)
         self._rm.step = step
-        vlims_ok = self._rm._step(step, updated_inputs={})
-        self._lp_step += 1
-        return {"vlims_ok": bool(vlims_ok), "lp_step": self._lp_step}
+        try:
+            vlims_ok = self._rm._step(step, updated_inputs={})
+            self._lp_step += 1
+            return {"vlims_ok": bool(vlims_ok), "lp_step": self._lp_step}
+        except Exception as exc:
+            return {
+                "vlims_ok": False,
+                "lp_step": self._lp_step,
+                "solver_error": f"{type(exc).__name__}: {exc}",
+            }
 
     # ============== Gym API ==============
     def reset(self, *, seed: int | None = None, options: Dict | None = None) -> Tuple[np.ndarray, Dict]:
@@ -358,7 +365,53 @@ class LiionpackSPMEPackEnv(BasePackEnv):
         current = float(np.clip(action[0], self.action_space.low[0], self.action_space.high[0]))
         # 执行一步
         lp_info = self._lp_do_step(current)
-        so = self._rm.step_output()
+        if "solver_error" in lp_info:
+            obs = build_observation(
+                self._state.soc,
+                self._state.voltage,
+                self._state.temperature,
+                self._state.soh,
+                self._state.i_prev,
+            ).as_array()
+            info = dict(self._last_info or {})
+            info.update(
+                {
+                    "t": float(self._state.t),
+                    "I": float(current),
+                    "I_prev": float(prev_i),
+                    "terminated_reason": "solver_error",
+                    "violation": False,
+                    "truncated": True,
+                    "solver_error": lp_info["solver_error"],
+                }
+            )
+            self._last_info = info
+            return obs, 0.0, False, True, info
+
+        try:
+            so = self._rm.step_output()
+        except Exception as exc:
+            obs = build_observation(
+                self._state.soc,
+                self._state.voltage,
+                self._state.temperature,
+                self._state.soh,
+                self._state.i_prev,
+            ).as_array()
+            info = dict(self._last_info or {})
+            info.update(
+                {
+                    "t": float(self._state.t),
+                    "I": float(current),
+                    "I_prev": float(prev_i),
+                    "terminated_reason": "step_output_error",
+                    "violation": False,
+                    "truncated": True,
+                    "solver_error": f"{type(exc).__name__}: {exc}",
+                }
+            )
+            self._last_info = info
+            return obs, 0.0, False, True, info
 
         # 真实输出
         # 真实执行的 pack 电流（环境状态的一部分）
@@ -410,7 +463,7 @@ class LiionpackSPMEPackEnv(BasePackEnv):
         violation = viol_hard                      # ✅ violation 只管硬约束
         truncated = bool(viol_internal)            # ✅ 内部失败用 truncated
 
-        soc_done = soc_pack >= 0.80
+        soc_done = soc_pack >= 0.8
         horizon_done = self._lp_step >= self.max_steps
         # 终止条件  
         terminated = horizon_done or soc_done or (self.terminate_on_violation and violation)

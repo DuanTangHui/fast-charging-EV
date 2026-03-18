@@ -27,7 +27,23 @@ def rollout_env(
     
     while not done:
         action = policy(state)
-        next_state, _, terminated, truncated, next_info = env.step(action)
+        try:
+            next_state, _, terminated, truncated, next_info = env.step(action)
+        except Exception as exc:
+            fallback = dict(prev_info) if isinstance(prev_info, dict) else {}
+            fallback.update(
+                {
+                    "terminated_reason": "step_exception",
+                    "violation": False,
+                    "truncated": True,
+                    "solver_error": f"{type(exc).__name__}: {exc}",
+                    "reward": 0.0,
+                }
+            )
+            infos.append(fallback)
+            print(f"[WARN] rollout_env 捕获到 step 异常，提前结束 episode: {fallback['solver_error']}")
+            break
+        
         
         # 使用 reward_from_info 自动提取参数
         reward = reward_from_info(prev_info, next_info, reward_cfg, env.v_max, env.t_max)

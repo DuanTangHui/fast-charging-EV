@@ -143,7 +143,20 @@ def main() -> None:
         agent.load(str(ckpt), map_location=str(DEVICE))
         agent.actor.eval()
 
-        curves = rollout_one_stage(agent, env, low=low, high=high, use_guard=not args.no_guard)
+        try:
+            curves = rollout_one_stage(
+                agent,
+                env,
+                low=low,
+                high=high,
+                use_guard=not args.no_guard,
+                max_steps=args.max_steps,
+            )
+        except Exception as exc:
+            if not args.continue_on_error:
+                raise
+            print(f"[ERROR] stage={stage} failed: {exc}. Skipping due to --continue-on-error.")
+            continue
         rows.append(
             {
                 "stage": str(stage),
