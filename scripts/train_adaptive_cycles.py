@@ -29,7 +29,7 @@ from src.utils.seeds import set_global_seed
 # 手动修改这里来控制从哪个老化阶段开始训练（包含该阶段）
 START_AGING_STAGE = 30
 # 手动修改这里来控制训练到哪个老化阶段结束（包含该阶段）
-END_AGING_STAGE = 31
+END_AGING_STAGE = 30
 def _load_network_weights_only(agent: object, ckpt_path: Path) -> None:
     """Load model weights only (no replay/optimizer/update_step) for adaptation experiments."""
     ckpt = torch.load(str(ckpt_path), map_location="cpu", weights_only=False)

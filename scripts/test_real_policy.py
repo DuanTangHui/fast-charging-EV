@@ -98,7 +98,7 @@ def main() -> None:
     parser.add_argument(
         "--start-cycle",
         type=int,
-        default=25,
+        default=29,
         help="Starting cycle index, inclusive",
     )
     parser.add_argument(
