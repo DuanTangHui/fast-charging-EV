@@ -32,11 +32,11 @@ python scripts/adaptive_experiment/experiment2_stage100_comparison.py \
 
 ---
 
-## 实验3：第10老化阶段，真实物理训练630ep vs 组合代理
+## 实验3：第20老化阶段，真实物理训练630ep vs 组合代理
 
 ```bash
-python scripts/adaptive_experiment/experiment3_stage10_real_vs_combined.py \
-  --runs-dir runs --stage 10 --real-train-episodes 630
+python scripts/adaptive_experiment/experiment3_stage20_real_vs_combined.py \
+  --runs-dir runs --stage 20 --real-train-episodes 630
 ```
 
 输出：
@@ -45,4 +45,10 @@ python scripts/adaptive_experiment/experiment3_stage10_real_vs_combined.py \
 - `runs/adaptive_experiment/result3/exp3_real_training_metrics.csv`
 - `runs/adaptive_experiment/result3/exp3_stage10_real_vs_combined_curves.png`
 画图：
+默认参数：
+python scripts\adaptive_experiment\plot_experiment3_eval.py
+自行添加参数：
+python scripts\adaptive_experiment\plot_experiment3_eval.py--stage 10 --real-ckpt runs/adaptive_experiment/result3/real_env_stage10_ep630_agent_ckpt.pt
+
+这个不要了：
 python scripts/static_experiment/plot_truevsstatic_agents.py --configs/pack_3p6s_spme_with_soh_prior.yaml  --seed 7  --real-agent-ckpt runs/adaptive_experiment/result3/real_env_stage10_ep630_agent_ckpt.pt --mix-agent-ckpt  --output-dir runs/adaptive_experiment/result3/pdf_plots

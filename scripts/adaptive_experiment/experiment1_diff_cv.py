@@ -142,7 +142,7 @@ def plot_metrics(rows: List[Dict[str, float]], out_dir: Path) -> None:
     import numpy as np
     import matplotlib.pyplot as plt
     from matplotlib import font_manager
-    from matplotlib.ticker import MultipleLocator  # 新增：用于控制刻度间隔
+    from matplotlib.ticker import MultipleLocator  # 用于控制刻度间隔
 
     # 1. 强制屏蔽字体内部元数据警告
     logging.getLogger('fontTools.subset').level = logging.ERROR
@@ -229,30 +229,15 @@ def plot_metrics(rows: List[Dict[str, float]], out_dir: Path) -> None:
     fig2, ax2 = plt.subplots(figsize=figsize_single)
     
     ax2.plot(stages, mse, marker="o", markersize=5, linewidth=1.5, 
-             label=r"均方误差", color=color_mse, markeredgecolor="white", markeredgewidth=0.8)
-    ax2.plot(stages, mae, marker="s", markersize=5, linewidth=1.5, 
-             label=r"平均绝对误差", color=color_mae, markeredgecolor="white", markeredgewidth=0.8)
+             color=color_mse, markeredgecolor="white", markeredgewidth=0.8)
     
     ax2.set_xlabel(r"老化阶段")
-    ax2.set_ylabel(r"误差值")
+    ax2.set_ylabel(r"均方误差 ($\mathrm{MSE}$)")  # 单图可以直接将名字写在 Y 轴上
     
     ax2.grid(True, linestyle=":", alpha=0.6, color="#CCCCCC")
     
-    # 【核心修改点】设置 x 轴刻度为主刻度每 5 个单位一标
     ax2.xaxis.set_major_locator(MultipleLocator(5))
-    ax2.set_xlim(left=0, right=max(stages) + 1) # 适当留白
-    
-    ax2.legend(
-        loc='best', 
-        ncol=1,                    
-        frameon=True,              
-        facecolor='white',         
-        framealpha=0.9,            
-        edgecolor=(0.7, 0.7, 0.7, 0.5),
-        borderpad=0.4,       
-        handletextpad=0.3,   
-        labelspacing=0.4
-    )
+    ax2.set_xlim(left=0, right=max(stages) + 1) 
     
     ax2.tick_params(axis='x', pad=2, length=3)
     ax2.tick_params(axis='y', pad=2, length=3)
@@ -260,11 +245,40 @@ def plot_metrics(rows: List[Dict[str, float]], out_dir: Path) -> None:
         label.set_fontname('Times New Roman')
 
     fig2.tight_layout()
-    fig2.savefig(out_dir / "exp1_mse_mae_vs_stage.pdf", format='pdf', bbox_inches="tight")
-    fig2.savefig(out_dir / "exp1_mse_mae_vs_stage.png", dpi=300, bbox_inches="tight")
+    # 独立保存 MSE 图片
+    fig2.savefig(out_dir / "exp1_mse_vs_stage.pdf", format='pdf', bbox_inches="tight")
+    fig2.savefig(out_dir / "exp1_mse_vs_stage.png", dpi=300, bbox_inches="tight")
     plt.close(fig2)
     
-    print(f"[Done] 评估指标图表(5刻度间隔版)已保存至: {out_dir}")
+    # ==========================================
+    # 3. 独立绘制 MAE vs Aging Stage
+    # ==========================================
+    fig3, ax3 = plt.subplots(figsize=figsize_single)
+    
+    # 改为用 square 标记(s) 和 绿色(color_mae)
+    ax3.plot(stages, mae, marker="s", markersize=5, linewidth=1.5, 
+             color=color_mae, markeredgecolor="white", markeredgewidth=0.8)
+    
+    ax3.set_xlabel(r"老化阶段")
+    ax3.set_ylabel(r"平均绝对误差 ($\mathrm{MAE}$)")
+    
+    ax3.grid(True, linestyle=":", alpha=0.6, color="#CCCCCC")
+    
+    ax3.xaxis.set_major_locator(MultipleLocator(5))
+    ax3.set_xlim(left=0, right=max(stages) + 1) 
+    
+    ax3.tick_params(axis='x', pad=2, length=3)
+    ax3.tick_params(axis='y', pad=2, length=3)
+    for label in ax3.get_xticklabels() + ax3.get_yticklabels():
+        label.set_fontname('Times New Roman')
+
+    fig3.tight_layout()
+    # 独立保存 MAE 图片
+    fig3.savefig(out_dir / "exp1_mae_vs_stage.pdf", format='pdf', bbox_inches="tight")
+    fig3.savefig(out_dir / "exp1_mae_vs_stage.png", dpi=300, bbox_inches="tight")
+    plt.close(fig3)
+
+    print(f"[Done] 评估指标图表已分别保存至: {out_dir}")
 # def plot_metrics(rows: List[Dict[str, float]], out_dir: Path) -> None:
 #     stages = np.array([int(r["stage"]) for r in rows])
 #     r2 = np.array([r["r2"] for r in rows])

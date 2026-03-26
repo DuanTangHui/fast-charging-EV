@@ -20,7 +20,7 @@ import sys
 import time
 from pathlib import Path
 from typing import Dict, List, Tuple
-
+import matplotlib.ticker as ticker
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
@@ -251,65 +251,177 @@ def plot_r2_curve(rows: List[Dict[str, float]], path: Path) -> None:
     ax.set_ylim(0.0, 1.0)
     ax.set_xlabel("Episode Number")
     ax.set_ylabel("5-Fold R$^2$ of GP [-]")
-    ax.grid(True, color=GRID_COLOR, alpha=0.7)
+    # ax.grid(True, color=GRID_COLOR, alpha=0.7)
     plt.tight_layout()
     plt.savefig(path, dpi=220)
     plt.close(fig)
 
+def plot_mse_mae_curve(rows: List[Dict[str, float]], out_dir: Path) -> None:
+    import logging
+    import os
+    import numpy as np
+    import matplotlib.pyplot as plt
+    from matplotlib import font_manager
+    from matplotlib.ticker import MultipleLocator, ScalarFormatter
 
-def plot_mse_mae_curve(rows: List[Dict[str, float]], path: Path) -> None:
-    setup_plot_style()
-    x = np.array([int(r["episode"]) for r in rows])
+    # 1. 强制屏蔽字体内部元数据警告
+    logging.getLogger('fontTools.subset').level = logging.ERROR
+
+    # 2. 加载宋体
+    simsun_path = r'C:\Windows\Fonts\simsun.ttc'
+    if os.path.exists(simsun_path):
+        font_manager.fontManager.addfont(simsun_path)
+
+    # 3. 顶刊全局标准配置
+    plt.rcParams.update({
+        "font.family": "serif",
+        "font.serif": ["SimSun"], 
+        "mathtext.fontset": "custom",
+        "mathtext.rm": "Times New Roman",
+        "pdf.fonttype": 42,
+        "ps.fonttype": 42,
+        "axes.unicode_minus": False,
+        
+        # 边框与刻度
+        "axes.spines.top": True,
+        "axes.spines.right": True,
+        "axes.linewidth": 1.0,
+        "xtick.major.width": 1.0,
+        "ytick.major.width": 1.0,
+        "xtick.direction": "in",
+        "ytick.direction": "in",
+        
+        # 严格的 10.5pt 字号体系 (对应 Word 五号字)
+        "font.size": 10.5,                     
+        "axes.labelsize": 10.5,
+        "xtick.labelsize": 10.5,
+        "ytick.labelsize": 10.5,
+        "legend.fontsize": 9  
+    })
+
+    # Nature 经典学术配色
+    color_mse = '#E64B35'   # 红色 (用于MSE)
+    color_mae = '#00A087'   # 蓝绿色 (用于MAE)
+
+    # 解析数据
+    episodes = np.array([int(r["episode"]) for r in rows])
     mse = np.array([r["mse"] for r in rows])
     mae = np.array([r["mae"] for r in rows])
 
-    # 保留合并图输出（PNG + PDF）：MSE 和 MAE 同图双 y 轴
-    combined_size = (SUBPLOT_WIDTH_CM * CM_TO_INCH, SUBPLOT_HEIGHT_CM * CM_TO_INCH)
-    fig, ax = plt.subplots(figsize=combined_size)
-    ax_mse = ax
-    ax_mae = ax.twinx()
-    ax_mse.plot(x, mse, color=NATURE_BLUE, linewidth=2.0)
-    ax_mae.plot(x, mae, color=NATURE_GREEN, linewidth=2.0)
-    ax_mse.set_xlim(20, 50)
-    ax_mse.set_xlabel("回合数", fontproperties=ZH_FONT)
-    ax_mse.set_ylabel("5折交叉验证 MSE", color=NATURE_BLUE, fontproperties=ZH_FONT)
-    ax_mae.set_ylabel("5折交叉验证 MAE", color=NATURE_GREEN, fontproperties=ZH_FONT)
-    ax_mse.tick_params(axis="y", colors=NATURE_BLUE)
-    ax_mae.tick_params(axis="y", colors=NATURE_GREEN)
-    ax_mse.grid(True, color=GRID_COLOR, alpha=0.7)
-    apply_axis_fonts(ax_mse)
-    apply_axis_fonts(ax_mae)
-    fig.tight_layout()
-    fig.savefig(path, dpi=220)
-    fig.savefig(path.with_suffix('.pdf'))
-    plt.close(fig)
+    # 确保输出目录存在
+    out_dir.mkdir(parents=True, exist_ok=True)
+    
+    # 物理尺寸规范：单张局部图 8.0cm × 5.5cm
+    cm_to_inch = 1 / 2.54
+    figsize_single = (8.0 * cm_to_inch, 5.5 * cm_to_inch)
 
-    sub_size = (SUBPLOT_WIDTH_CM * CM_TO_INCH, SUBPLOT_HEIGHT_CM * CM_TO_INCH)
-    mse_pdf = path.with_name("fig7_mse_vs_episode_subfig.pdf")
-    mae_pdf = path.with_name("fig7_mae_vs_episode_subfig.pdf")
+    # 辅助函数：统一设置科学计数法
+    def setup_sci_limits(ax_axis):
+        fmt = ScalarFormatter(useMathText=True)
+        fmt.set_scientific(True)
+        fmt.set_powerlimits((-1, 1))
+        ax_axis.set_major_formatter(fmt)
+        # 确保科学计数法的 10^n 字体也是 Times New Roman
+        ax_axis.get_offset_text().set_fontname('Times New Roman')
+        ax_axis.get_offset_text().set_fontsize(10.5)
 
-    fig_mse, ax_mse = plt.subplots(figsize=sub_size)
-    ax_mse.plot(x, mse, color=NATURE_BLUE, linewidth=1.8)
-    ax_mse.set_xlim(20, 50)
-    ax_mse.set_xlabel("回合数", fontproperties=ZH_FONT)
-    ax_mse.set_ylabel("5折交叉验证 MSE", fontproperties=ZH_FONT)
-    ax_mse.grid(True, color=GRID_COLOR, alpha=0.7)
-    apply_axis_fonts(ax_mse)
+    # 辅助函数：统一坐标轴刻度字体
+    def apply_times_new_roman_ticks(*axes):
+        for ax in axes:
+            ax.tick_params(axis='x', pad=2, length=3)
+            ax.tick_params(axis='y', pad=2, length=3)
+            for label in ax.get_xticklabels() + ax.get_yticklabels():
+                label.set_fontname('Times New Roman')
+
+    # X 轴边界留白计算
+    x_min, x_max = min(episodes), max(episodes)
+    x_padding = (x_max - x_min) * 0.05 if x_max > x_min else 2
+
+    # ==========================================
+    # 1. 绘制 合并图 (双Y轴: MSE & MAE vs Episode)
+    # ==========================================
+    fig_comb, ax_mse_c = plt.subplots(figsize=figsize_single)
+    ax_mae_c = ax_mse_c.twinx()
+    
+    line1, = ax_mse_c.plot(episodes, mse, marker="o", markersize=5, linewidth=1.5, 
+                           color=color_mse, markeredgecolor="white", markeredgewidth=0.8, label="MSE")
+    line2, = ax_mae_c.plot(episodes, mae, marker="s", markersize=5, linewidth=1.5, 
+                           color=color_mae, markeredgecolor="white", markeredgewidth=0.8, label="MAE")
+    
+    ax_mse_c.set_xlabel(r"回合数")
+    ax_mse_c.set_ylabel(r"均方误差 ($\mathrm{MSE}$)", color=color_mse)
+    ax_mae_c.set_ylabel(r"平均绝对误差 ($\mathrm{MAE}$)", color=color_mae)
+    
+    # 轴刻度颜色与曲线统一
+    ax_mse_c.tick_params(axis='y', colors=color_mse)
+    ax_mae_c.tick_params(axis='y', colors=color_mae)
+    # 对于双Y轴，右侧轴(ax_mae_c)的边框颜色通常保持默认或跟随全局，这里保持默认即可
+    
+    ax_mse_c.grid(True, linestyle=":", alpha=0.6, color="#CCCCCC")
+    ax_mse_c.xaxis.set_major_locator(MultipleLocator(5))
+    ax_mse_c.set_xlim(left=x_min - x_padding, right=x_max + x_padding)
+    
+    setup_sci_limits(ax_mse_c.yaxis)
+    setup_sci_limits(ax_mae_c.yaxis)
+    apply_times_new_roman_ticks(ax_mse_c, ax_mae_c)
+
+    # 统一双轴图例
+    lines = [line1, line2]
+    labels = [l.get_label() for l in lines]
+    ax_mse_c.legend(lines, labels, loc='upper right', frameon=False)
+
+    fig_comb.tight_layout()
+    fig_comb.savefig(out_dir / "fig7_combined_mse_mae.pdf", format='pdf', bbox_inches="tight")
+    fig_comb.savefig(out_dir / "fig7_combined_mse_mae.png", dpi=300, bbox_inches="tight")
+    plt.close(fig_comb)
+
+    # ==========================================
+    # 2. 独立绘制 MSE vs Episode
+    # ==========================================
+    fig_mse, ax_mse_s = plt.subplots(figsize=figsize_single)
+    
+    ax_mse_s.plot(episodes, mse, marker="o", markersize=5, linewidth=1.5, 
+                  color=color_mse, markeredgecolor="white", markeredgewidth=0.8)
+    
+    ax_mse_s.set_xlabel(r"回合数")
+    ax_mse_s.set_ylabel(r"均方误差 ($\mathrm{MSE}$)") 
+    
+    ax_mse_s.grid(True, linestyle=":", alpha=0.6, color="#CCCCCC")
+    ax_mse_s.xaxis.set_major_locator(MultipleLocator(5))
+    ax_mse_s.set_xlim(left=x_min - x_padding, right=x_max + x_padding)
+    
+    setup_sci_limits(ax_mse_s.yaxis)
+    apply_times_new_roman_ticks(ax_mse_s)
+
     fig_mse.tight_layout()
-    fig_mse.savefig(mse_pdf)
+    fig_mse.savefig(out_dir / "fig7_mse_vs_episode_subfig.pdf", format='pdf', bbox_inches="tight")
+    fig_mse.savefig(out_dir / "fig7_mse_vs_episode_subfig.png", dpi=300, bbox_inches="tight")
     plt.close(fig_mse)
 
-    fig_mae, ax_mae = plt.subplots(figsize=sub_size)
-    ax_mae.plot(x, mae, color=NATURE_GREEN, linewidth=1.8)
-    ax_mae.set_xlim(20, 50)
-    ax_mae.set_xlabel("回合数", fontproperties=ZH_FONT)
-    ax_mae.set_ylabel("5折交叉验证 MAE", fontproperties=ZH_FONT)
-    ax_mae.grid(True, color=GRID_COLOR, alpha=0.7)
-    apply_axis_fonts(ax_mae)
+    # ==========================================
+    # 3. 独立绘制 MAE vs Episode
+    # ==========================================
+    fig_mae, ax_mae_s = plt.subplots(figsize=figsize_single)
+    
+    ax_mae_s.plot(episodes, mae, marker="s", markersize=5, linewidth=1.5, 
+                  color=color_mae, markeredgecolor="white", markeredgewidth=0.8)
+    
+    ax_mae_s.set_xlabel(r"回合数")
+    ax_mae_s.set_ylabel(r"平均绝对误差 ($\mathrm{MAE}$)")
+    
+    ax_mae_s.grid(True, linestyle=":", alpha=0.6, color="#CCCCCC")
+    ax_mae_s.xaxis.set_major_locator(MultipleLocator(5))
+    ax_mae_s.set_xlim(left=x_min - x_padding, right=x_max + x_padding)
+    
+    setup_sci_limits(ax_mae_s.yaxis)
+    apply_times_new_roman_ticks(ax_mae_s)
+
     fig_mae.tight_layout()
-    fig_mae.savefig(mae_pdf)
+    fig_mae.savefig(out_dir / "fig7_mae_vs_episode_subfig.pdf", format='pdf', bbox_inches="tight")
+    fig_mae.savefig(out_dir / "fig7_mae_vs_episode_subfig.png", dpi=300, bbox_inches="tight")
     plt.close(fig_mae)
 
+    print(f"[Done] MSE & MAE 图表已按照顶刊标准保存至: {out_dir}")
 
 def rollout_real_env(env, agent, seed: int, max_steps: int, soc_stop: float) -> Dict[str, np.ndarray]:
     s, info = env.reset(seed=seed)
@@ -358,44 +470,96 @@ def rollout_surrogate(initial_state: np.ndarray, agent, surrogate: StaticSurroga
 
 def plot_rollout_compare(real: Dict[str, np.ndarray], gp: Dict[str, np.ndarray], path: Path) -> None:
     setup_plot_style()
-    tr = np.arange(len(real["soc"]))
-    tg = np.arange(len(gp["soc"]))
+    
+    # 【修改点 1】：横坐标步数乘以 10 转换为时间 (s)
+    tr_time = np.arange(len(real["soc"])) * 10.0
+    tg_time = np.arange(len(gp["soc"])) * 10.0
+    
+    # 电流提前取绝对值
+    real_current_abs = np.abs(real["current"])
+    gp_current_abs = np.abs(gp["current"])
+    
+    # ---------------------------------------------------------
+    # 1. 绘制 2x2 汇总大图 (保持原有粗排版，仅修改横轴为 Time)
+    # ---------------------------------------------------------
     fig, axes = plt.subplots(2, 2, figsize=(12, 8))
-    axes[0, 0].plot(tr, real["current"], color=NATURE_BLUE, label="Real Env")
-    axes[0, 0].plot(tg, gp["current"], "--", color=NATURE_GREEN, label="Static GP")
-    axes[0, 0].set_title("Current (A)")
-    axes[0, 1].plot(tr, real["voltage"], color=NATURE_BLUE); axes[0, 1].plot(tg, gp["voltage"], "--", color=NATURE_GREEN); axes[0, 1].set_title("Voltage (V)")
-    axes[1, 0].plot(tr, real["soc"], color=NATURE_BLUE); axes[1, 0].plot(tg, gp["soc"], "--", color=NATURE_GREEN); axes[1, 0].set_title("SOC")
-    axes[1, 1].plot(tr, real["temperature"], color=NATURE_BLUE); axes[1, 1].plot(tg, gp["temperature"], "--", color=NATURE_GREEN); axes[1, 1].set_title("Temperature (K)")
+    axes[0, 0].plot(tr_time, real_current_abs, color=NATURE_BLUE, label="Real Env")
+    axes[0, 0].plot(tg_time, gp_current_abs, "--", color=NATURE_GREEN, label="Static GP")
+    axes[0, 0].set_title("Absolute Current (A)")
+    
+    axes[0, 1].plot(tr_time, real["voltage"], color=NATURE_BLUE)
+    axes[0, 1].plot(tg_time, gp["voltage"], "--", color=NATURE_GREEN)
+    axes[0, 1].set_title("Voltage (V)")
+    
+    axes[1, 0].plot(tr_time, real["soc"], color=NATURE_BLUE)
+    axes[1, 0].plot(tg_time, gp["soc"], "--", color=NATURE_GREEN)
+    axes[1, 0].set_title("SOC")
+    
+    axes[1, 1].plot(tr_time, real["temperature"], color=NATURE_BLUE)
+    axes[1, 1].plot(tg_time, gp["temperature"], "--", color=NATURE_GREEN)
+    axes[1, 1].set_title("Temperature (K)")
+    
     for ax in axes.ravel():
-        ax.set_xlabel("Step")
-        ax.grid(True, color=GRID_COLOR, alpha=0.7)
-    axes[0, 0].legend()
-    plt.tight_layout(); plt.savefig(path, dpi=220); plt.close(fig)
+        ax.set_xlabel("Time (s)")
+        # ax.grid(True, color=GRID_COLOR, alpha=0.7)
+    
+    # 汇总图的图例也加上边框
+    axes[0, 0].legend(frameon=True)
+    plt.tight_layout()
+    plt.savefig(path, dpi=220)
+    plt.close(fig)
 
+    # ---------------------------------------------------------
+    # 2. 绘制符合顶刊规范的独立子图 (应用 $\mathrm{}$ 与 Formatter)
+    # ---------------------------------------------------------
     sub_size = (SUBPLOT_WIDTH_CM * CM_TO_INCH, SUBPLOT_HEIGHT_CM * CM_TO_INCH)
+    
+    # 【修改点 2】：引入 \mathrm{} 格式化坐标轴标签
     series = [
-        ("current", "电流 (A)", "full_rollout_current_subfig.pdf"),
-        ("voltage", "电压 (V)", "full_rollout_voltage_subfig.pdf"),
-        ("soc", "荷电状态 SOC", "full_rollout_soc_subfig.pdf"),
-        ("temperature", "温度 (K)", "full_rollout_temperature_subfig.pdf"),
+        ("current", r"充电电流绝对值 $\mathrm{(A)}$", "full_rollout_current_subfig.pdf", real_current_abs, gp_current_abs),
+        ("voltage", r"端电压 $\mathrm{(V)}$", "full_rollout_voltage_subfig.pdf", real["voltage"], gp["voltage"]),
+        ("soc", r"电池荷电状态 $\mathrm{(-)}$", "full_rollout_soc_subfig.pdf", real["soc"], gp["soc"]),
+        ("temperature", r"最高温度 $\mathrm{(K)}$", "full_rollout_temperature_subfig.pdf", real["temperature"], gp["temperature"]),
     ]
 
-    for key, ylabel, fname in series:
-        fig_sub, ax_sub = plt.subplots(figsize=sub_size)
-        ax_sub.plot(tr, real[key], color=NATURE_BLUE, label="真实仿真环境", linewidth=1.6)
-        ax_sub.plot(tg, gp[key], "--", color=NATURE_GREEN, label="静态代理模型", linewidth=1.6)
-        ax_sub.set_xlabel("步数", fontproperties=ZH_FONT)
-        ax_sub.set_ylabel(ylabel, fontproperties=ZH_FONT)
-        ax_sub.grid(True, color=GRID_COLOR, alpha=0.7)
-        legend = ax_sub.legend(prop=ZH_FONT, frameon=False)
-        for text in legend.get_texts():
-            text.set_fontproperties(ZH_FONT)
-        apply_axis_fonts(ax_sub)
-        fig_sub.tight_layout()
-        fig_sub.savefig(path.with_name(fname))
-        plt.close(fig_sub)
+    # 【修改点 3】：定义刻度数字格式化函数，强制使用 Times New Roman
+    def times_formatter(x, pos):
+        return f"$\\mathrm{{{x:g}}}$"
 
+    for key, ylabel, fname, r_data, g_data in series:
+        fig_sub, ax_sub = plt.subplots(figsize=sub_size)
+        
+        # 绘制曲线
+        ax_sub.plot(tr_time, r_data, color=NATURE_BLUE, label="真实仿真环境", linewidth=1.6)
+        ax_sub.plot(tg_time, g_data, "--", color=NATURE_GREEN, label="静态代理模型", linewidth=1.6)
+        
+        # 设置横纵标签
+        ax_sub.set_xlabel(r"时间 $\mathrm{(s)}$")
+        ax_sub.set_ylabel(ylabel)
+        
+        # 网格设置
+        # ax_sub.grid(True, color=GRID_COLOR, alpha=0.7)
+        
+        # 强制坐标轴刻度数字使用我们定义的 times_formatter
+        ax_sub.xaxis.set_major_formatter(ticker.FuncFormatter(times_formatter))
+        ax_sub.yaxis.set_major_formatter(ticker.FuncFormatter(times_formatter))
+        
+        # 【修改点 4】：图例加上边框 (frameon=True)，并设置精美的半透明白底灰框
+        ax_sub.legend(
+            loc="best",
+            frameon=True,
+            facecolor='white',
+            framealpha=0.9,
+            edgecolor=(0.7, 0.7, 0.7, 0.5),
+            borderpad=0.3,
+            handletextpad=0.3,
+            labelspacing=0.2
+        )
+        
+        fig_sub.tight_layout()
+        # 加入 bbox_inches='tight' 防止标签被裁切
+        fig_sub.savefig(path.with_name(fname), format="pdf", bbox_inches="tight")
+        plt.close(fig_sub)
 
 def plot_efficiency(real_t: float, gp_t: float, path: Path) -> None:
     fig, ax = plt.subplots(figsize=(6, 4))
@@ -448,7 +612,7 @@ def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument("--dataset", type=Path, default=Path("dataset_with_episode.csv"))
     p.add_argument("--config", type=Path, default=Path("configs/pack_3p6s_spme.yaml"))
-    p.add_argument("--agent-ckpt", type=Path, default=Path("runs/cycle0/agent_ckpt.pt"))
+    p.add_argument("--agent-ckpt", type=Path, default=Path("runs/cycle0-td3/agent_ckpt.pt"))
     p.add_argument("--surrogate-ckpt", type=Path, default=Path("runs/cycle0/static_surrogate.pt"))
     p.add_argument("--output-dir", type=Path, default=Path("runs/static_surrogate_validity_real"))
     p.add_argument("--episode-start", type=int, default=20)
@@ -472,7 +636,7 @@ def main() -> None:
         if not csv_path.exists():
             raise FileNotFoundError(f"Required file not found: {csv_path}")
         cv_rows = load_episode_curve_csv(csv_path)
-        plot_mse_mae_curve(cv_rows, args.output_dir / "fig7_mse_mae_vs_episode.png")
+        plot_mse_mae_curve(cv_rows, args.output_dir)
         print(f"[Done] fig7 redrawn from csv: {csv_path}")
         return
     

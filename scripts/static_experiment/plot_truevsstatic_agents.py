@@ -92,7 +92,7 @@ def plot_separate_trajectories(real_traj, mix_traj, output_dir: Path) -> None:
         
         # 仅在电流图上显示图例，或者你可以根据需要调整
         if key == "current_a":
-            ax.legend(frameon=False, loc="best")
+            ax.legend(frameon=True, loc="best")
             
         plt.tight_layout()
         
@@ -105,7 +105,7 @@ def main() -> None:
     parser.add_argument("--config", type=Path, default=Path("configs/pack_3p6s_spme.yaml"))
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--real-agent-ckpt", type=Path, default=Path("runs/static_experiment/exp1_policy_shape/real_trained_agent_ckpt.pt"))
-    parser.add_argument("--mix-agent-ckpt", type=Path, default=Path("runs/cycle0/agent_ckpt.pt"))
+    parser.add_argument("--mix-agent-ckpt", type=Path, default=Path("runs/cycle0-td3/agent_ckpt.pt"))
     parser.add_argument("--output-dir", type=Path, default=Path("runs/static_experiment/exp1_policy_shape/pdf_plots"))
     args = parser.parse_args()
 
