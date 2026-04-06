@@ -65,15 +65,19 @@ def build_policy_from_manifest_item(env, item: Dict[str, Any], cfg: Dict[str, An
 
     raise ValueError(f"Unknown item type: {item['type']}")
 
-
 def plot_publication_comparison(method_to_traj: Dict[str, List[Dict]], output_dir: Path):
     """
-    顶刊规范化的 2x2 矩阵子图：绘制电流、SOC、电压、温度的时间对比曲线。
+    顶刊规范化：独立保存电流、SOC、电压、温度曲线为单独的PDF。
+    已根据用户要求：
+    1. 修改配色：GA 和 Other 颜色改为清晰亮色。
+    2. 图例顺序：将‘本文所提方法’排在第一位。
+    3. 标签修改：端电压改为“单体最大电压 (V)”。
+    4. 单位修改：温度单位改为摄氏度 (°C)，并自动进行 K 转 °C 的计算。
     """
-    # 1. 强制屏蔽字体内部元数据警告
+    # 1. 屏蔽字体元数据警告
     logging.getLogger('fontTools.subset').level = logging.ERROR
 
-    # 2. 加载宋体
+    # 2. 加载宋体 (针对Windows)
     simsun_path = r'C:\Windows\Fonts\simsun.ttc'
     if os.path.exists(simsun_path):
         font_manager.fontManager.addfont(simsun_path)
@@ -81,118 +85,140 @@ def plot_publication_comparison(method_to_traj: Dict[str, List[Dict]], output_di
     # 3. 顶刊全局标准配置
     plt.rcParams.update({
         "font.family": "serif",
-        "font.serif": ["SimSun"], 
-        "mathtext.fontset": "custom",
-        "mathtext.rm": "Times New Roman",
+        "font.serif": ["SimSun", "Times New Roman"], 
         "pdf.fonttype": 42,
         "ps.fonttype": 42,
         "axes.unicode_minus": False,
         
         "axes.spines.top": True,
         "axes.spines.right": True,
-        "axes.linewidth": 1.0,
+        "axes.linewidth": 1.0, 
         "xtick.major.width": 1.0,
         "ytick.major.width": 1.0,
         "xtick.direction": "in",
         "ytick.direction": "in",
         
-        "font.size": 10.5,                     
-        "axes.labelsize": 10.5,
-        "xtick.labelsize": 10.5,
-        "ytick.labelsize": 10.5,
+        "font.size": 9,             
+        "axes.labelsize": 9,
+        "xtick.labelsize": 9,
+        "ytick.labelsize": 9,
         "legend.fontsize": 9  
     })
 
-    # 4. Nature 经典学术配色 (映射不同方法)
-    # 你可以根据实际 manifest 里的名字调整匹配关键字
+    # 4. 配色方案：清晰、高对比度的亮色
     color_dict = {
-        "ddpg": '#3C5488',   # 深蓝色
-        "td3": '#E64B35',    # 红色
-        "mcc": '#00A087',    # 蓝绿色 (用于多阶段恒流, 根据你的具体缩写匹配)
-        "default": '#A9A9A9' # 灰色兜底
+        "ddpg": '#3C5488',   # 深蓝色 (DDPG)
+        "td3": '#E64B35',    # 红色 (本文所提方法)
+        "mcc": '#00A087',    # 蓝绿色 (MCC)
+        "ga": '#FF9E1C',     # 清晰亮丽的橙色 (GA)
+        "default": '#A040A0' # 清晰亮丽的紫色 (Other)
     }
 
-    # 物理尺寸规范：2x2 矩阵子图，单图 7.5cm x 6.0cm -> 整体约 15cm x 12cm
-    cm_to_inch = 1 / 2.54
-    fig, axs = plt.subplots(2, 2, figsize=(15.0 * cm_to_inch, 12.0 * cm_to_inch))
-    axs = axs.flatten()
-
-    # 提取轨迹字典的常用键（如果你的 traj key 不叫这些，请在此处修改）
-    # 通常的轨迹键可能为："t", "current", "voltage", "soc", "temperature"
+    # 5. 【核心修改】指标配置更新标签和单位
+    # 格式：(键, 纵轴标签, 文件名后缀)
     metrics = [
-        ("current", r"充电电流 ($\mathrm{A}$)","(a) 充电电流"),
-        ("soc", r"电池荷电状态","(b) 电池荷电状态"),
-        ("vmax", r"端电压 ($\mathrm{V}$)","(c) 端电压"),
-        ("tmax", r"最高温度 ($\mathrm{K}$)","(d) 最高温度")
+        ("current", "充电电流 (A)", "Current"),
+        ("soc", "电池荷电状态 (-)", "SOC"),
+        ("vmax", "单体最大电压 (V)", "Voltage"), # 修改为单体最大电压
+        ("tmax", "最高温度 (℃)", "Temperature") # 修改为摄氏度
     ]
 
-    for name, traj in method_to_traj.items():
-        name_lower = name.lower()
+    cm_to_inch = 1 / 2.54
+    # 设定单图尺寸，例如 8cm x 6cm
+    fig_size = (8.0 * cm_to_inch, 6.0 * cm_to_inch)
+
+    for key, ylabel, filename in metrics:
+        fig, ax = plt.subplots(figsize=fig_size)
         
-        # 寻找对应的颜色
-        c = color_dict["default"]
-        for k_color, v_color in color_dict.items():
-            if k_color in name_lower:
-                c = v_color
-                break
+        # 创建绘图项目列表，用于排序和统一处理
+        plot_info_list = []
 
-        if "ddpg" in name_lower:
-            display_name = "DDPG方法"
-        elif "td3" in name_lower:
-            display_name = "本章所提方法"
-        elif any(k in name_lower for k in ["mcc", "mscc", "multi"]):
-            display_name = "多阶段恒流方法"
-        else:
-            display_name = name.upper()
-        # 转换时间轴单位（假设环境是以秒记录，画图时转换为分钟更直观。如果不需转换则去掉 /60.0）
-        time_seq = np.array([step.get("t", step.get("time", 0)) for step in traj]) 
-
-        for i, (key, ylabel) in enumerate(metrics):
-            # 获取 y 轴数据，兼容常见的键命名
-            # 如果你的字典里叫 'V' 或 'T_cell' 等，请相应调整 'step.get' 的备选项
-            y_seq = np.array([step.get(key, step.get(key.capitalize(), 0)) for step in traj])
+        for name, traj in method_to_traj.items():
+            name_lower = name.lower()
             
-            axs[i].plot(time_seq, y_seq, label=display_name, color=c, linewidth=1.5)
+            # 颜色匹配
+            c = color_dict["default"]
+            for k_color, v_color in color_dict.items():
+                if k_color in name_lower:
+                    c = v_color
+                    break
 
-    for i, (key, ylabel) in enumerate(metrics):
-        ax = axs[i]
+            # 命名转换
+            if "ddpg" in name_lower:
+                display_name = "DDPG"
+            elif "td3" in name_lower:
+                display_name = "本文所提方法"
+            elif "ga" in name_lower:
+                display_name = r"GA-MSCC$^{[83]}$"
+            elif any(k in name_lower for k in ["mcc", "mscc", "multi"]):
+                display_name = r"MSCC$^{[82]}$"
+            else:
+                display_name = name.upper()
+
+            # 确定图例顺序优先级 (数字越小越靠前)
+            order_priority = 5
+            if display_name == "本文所提方法":
+                order_priority = 0
+            elif display_name == r"GA-MSCC$^{[83]}$":
+                order_priority = 1
+            elif display_name ==  r"MSCC$^{[82]}$":
+                order_priority = 2
+            elif display_name == "DDPG":
+                order_priority = 3
+            elif display_name == name.upper():
+                order_priority = 4
+
+            # 时间轴处理
+            time_seq = np.array([step.get("t", step.get("time", 0)) for step in traj]) 
+            
+            # 数据提取与处理
+            y_seq = np.array([step.get(key, step.get(key.capitalize(), 0)) for step in traj], dtype=float)
+            
+            # 电流取绝对值
+            if key == "current":
+                y_seq = np.abs(y_seq)
+            
+            # 【核心修改】温度开尔文转摄氏度
+            if key == "tmax":
+                # 简单判定：如果温度均值大于200，说明原数据大概率是开尔文(K)
+                if len(y_seq) > 0 and np.mean(y_seq) > 200:
+                    y_seq = y_seq - 273.15
+            
+            # 将绘图信息存入列表
+            plot_info_list.append({
+                "time": time_seq,
+                "y": y_seq,
+                "label": display_name,
+                "color": c,
+                "order": order_priority,
+                "name": name 
+            })
+
+        # 按自定义优先级排序
+        plot_info_list.sort(key=lambda x: (x["order"], x["name"]))
+
+        # 按排序后的顺序绘图
+        for plot_info in plot_info_list:
+            ax.plot(plot_info["time"], plot_info["y"], label=plot_info["label"], color=plot_info["color"], linewidth=0.5)
+
+        # 修饰每个独立的图
         ax.set_ylabel(ylabel)
-        if i >= 2:
-            ax.set_xlabel(r"时间 ($\mathrm{s}$)")
+        ax.set_xlabel("时间 (s)")
         
-        # 网格与刻度强制规范
-        ax.grid(True, linestyle=':', alpha=0.6, color='#CCCCCC')
-        ax.tick_params(axis='x', pad=2, length=3)
-        ax.tick_params(axis='y', pad=2, length=3)
+        # 强制刻度字体为 Times New Roman
         for label in ax.get_xticklabels() + ax.get_yticklabels():
             label.set_fontname('Times New Roman')
         
-    fig.align_ylabels()
-    handles, labels = axs[0].get_legend_handles_labels()
-    fig.legend(
-        handles, labels,
-        loc='lower center',       # 定位点为下居中
-        bbox_to_anchor=(0.5, 0.02),  # 锚点放在画布底端中间
-        ncol=3,                   # 强制分为3列（一行展示完）
-        frameon=True,              
-        facecolor='white',         
-        framealpha=0.9,            
-        edgecolor=(0.7, 0.7, 0.7, 0.5),
-        borderpad=0.5,       
-        handletextpad=0.4,   
-        columnspacing=2.0         # 增加列之间的间距，显得更舒展
-    )
+        # 图例内置到每个子图
+        ax.legend(loc='best', frameon=True, framealpha=0.8)
 
-    # 【核心修改】：调整布局，把底部的 8% 空出来留给图例
-    plt.tight_layout(rect=[0, 0.05, 1, 1])
+        # 保存独立文件
+        plt.tight_layout()
+        pdf_path = output_dir / f"comparison_{filename.lower()}.pdf"
+        plt.savefig(pdf_path, format='pdf', bbox_inches='tight')
+        plt.close(fig)
 
-    
-    output_pdf = output_dir / "real_env_comparison.pdf"
-    output_png = output_dir / "real_env_comparison.png"
-    plt.savefig(output_pdf, format='pdf', bbox_inches='tight')
-    plt.savefig(output_png, dpi=300, bbox_inches='tight')
-    plt.close(fig)
-
+    print(f"所有独立指标图已保存至: {output_dir}")
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run one real-environment episode for specific comparison methods.")
@@ -215,15 +241,15 @@ def main() -> None:
     
     # 允许保留的方法关键词（确保 "多阶段恒流" 在你的 manifest 中是用 "mcc", "mscc" 或 "multi" 命名的）
     # 如果你的多阶段恒流拼写不同，请在这里补充！
-    allowed_keywords = ["ddpg", "td3", "mcc", "mscc", "multi"]
+    allowed_keywords = ["ddpg", "td3", "mcc", "mscc", "multistage_cc","ga_cc"]
 
     for name, item in manifest.items():
         name_lower = name.lower()
         
         # 核心过滤逻辑：屏蔽 ppo 和 ga，且只允许在 allowed_keywords 中的方法
-        if "ppo" in name_lower or "ga" in name_lower:
-            print(f"[Skip] {name} 触发屏蔽规则 (ppo/ga)")
-            continue
+        # if "ppo" in name_lower or "ga" in name_lower:
+        #     print(f"[Skip] {name} 触发屏蔽规则 (ppo/ga)")
+        #     continue
             
         if not any(k in name_lower for k in allowed_keywords):
             print(f"[Skip] {name} 不在白名单中 ({allowed_keywords})")

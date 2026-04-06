@@ -369,7 +369,7 @@ def evaluate_policy_trajectory(env, agent, seed: int) -> Dict[str, np.ndarray]:
             "temperature_k": np.asarray([np.nan], dtype=np.float32),
         }
 
-    cur = [abs(float(info.get("I_pack_true", s[6])))]
+    cur = [float(info.get("I_pack_true", s[6]))]
     soc = [float(info.get("SOC_pack", s[0]))]
     vol = [float(info.get("V_cell_max", s[2]))]
     temp = [float(info.get("T_cell_max", s[4]))]
@@ -382,7 +382,7 @@ def evaluate_policy_trajectory(env, agent, seed: int) -> Dict[str, np.ndarray]:
         except Exception as exc:  # noqa: BLE001
             print(f"[WARN] evaluate trajectory step failed: {exc}")
             break
-        cur.append(abs(float(info.get("I_pack_true", float(a[0])))))
+        cur.append(float(info.get("I_pack_true", float(a[0]))))
         soc.append(float(info.get("SOC_pack", s[0])))
         vol.append(float(info.get("V_cell_max", s[2])))
         temp.append(float(info.get("T_cell_max", s[4])))

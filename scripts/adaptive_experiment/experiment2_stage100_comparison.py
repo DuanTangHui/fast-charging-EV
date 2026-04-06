@@ -170,7 +170,7 @@ def main() -> None:
     reward_cfg = PaperRewardConfig(**cfg["reward"])
 
     runs_dir = Path(args.runs_dir)
-    static_ckpt = runs_dir / "cycle00" / "agent_ckpt.pt"
+    static_ckpt = runs_dir / "cycle0" / "agent_ckpt.pt"
     if not static_ckpt.exists():
         logging.error(f"Missing static surrogate: {static_ckpt}")
         sys.exit(1)

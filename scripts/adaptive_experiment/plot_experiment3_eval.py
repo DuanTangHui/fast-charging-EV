@@ -17,7 +17,7 @@ from typing import Dict, List
 
 import matplotlib.pyplot as plt
 import numpy as np
-import torch
+
 from matplotlib import font_manager
 
 CURRENT_DIR = Path(__file__).resolve().parent
@@ -36,30 +36,24 @@ from src.utils.seeds import set_global_seed
 # ==========================================
 # 顶刊级全局图表环境配置
 # ==========================================
-logging.getLogger('fontTools.subset').level = logging.ERROR
-simsun_path = r'C:\Windows\Fonts\simsun.ttc'
-if os.path.exists(simsun_path):
-    font_manager.fontManager.addfont(simsun_path)
 
 plt.rcParams.update({
-    "font.family": "serif",
-    "font.serif": ["SimSun"], 
-    "mathtext.fontset": "custom",
-    "mathtext.rm": "Times New Roman",
+    'font.family': ['Times New Roman', 'SimSun'],  # 关键：先英文字体，再中文
+    'axes.unicode_minus': False,
+    'figure.dpi': 300,
     "pdf.fonttype": 42,
     "ps.fonttype": 42,
-    "axes.unicode_minus": False,
     "axes.spines.top": True,
     "axes.spines.right": True,
-    "axes.linewidth": 1.0,
-    "xtick.major.width": 1.0,
-    "ytick.major.width": 1.0,
+    "axes.linewidth": 0.5,
+    "xtick.major.width": 0.5,
+    "ytick.major.width": 0.5,
     "xtick.direction": "in",
     "ytick.direction": "in",
-    "font.size": 10.5,                     
-    "axes.labelsize": 10.5,
-    "xtick.labelsize": 10.5,
-    "ytick.labelsize": 10.5,
+    "font.size": 9,                     
+    "axes.labelsize": 9,
+    "xtick.labelsize": 9,
+    "ytick.labelsize": 9,
     "legend.fontsize": 9  
 })
 
@@ -75,7 +69,7 @@ def guarded_policy(agent, low: float, high: float):
 def infos_to_curve(infos: List[Dict]) -> Dict[str, List[float]]:
     return {
         "time": [float(i.get("t", 0.0)) for i in infos],
-        "current": [float(i.get("I_pack_true", i.get("I", 0.0))) for i in infos],
+        "current": [abs(float(i.get("I_pack_true", i.get("I", 0.0)))) for i in infos],
         "voltage": [float(i.get("V_cell_max", 0.0)) for i in infos],
         "soc": [float(i.get("SOC_pack", 0.0)) for i in infos],
         "temperature": [float(i.get("T_cell_max", 0.0)) for i in infos],
@@ -83,42 +77,77 @@ def infos_to_curve(infos: List[Dict]) -> Dict[str, List[float]]:
 
 def plot_curves_separate(real_curve: Dict[str, List[float]], comb_curve: Dict[str, List[float]], out_dir: Path, prefix: str) -> None:
     """
-    将四个状态量分别绘制并保存为独立的高质量图片。
-    尺寸严格遵循单图规范: 8.0cm x 5.5cm，横纵坐标及图例已中文化。
+    采用双 Y 轴方案：左轴展示状态量对比，右轴用浅色阴影展示绝对误差。
+    尺寸维持单图规范: 8.0cm x 5.5cm，并严格固定子图边距。
     """
-    # Nature 经典学术配色
-    colors_nature = ['#E64B35', '#4DBBD5']
+    colors_nature = [ '#4DBBD5','#E64B35', '#E0F0D4'] # 红，蓝，浅灰（用于误差阴影）
     
-    # 物理尺寸换算 (厘米 -> 英寸)
     cm_to_inch = 1 / 2.54
     figsize_single = (8.0 * cm_to_inch, 5.5 * cm_to_inch)
 
-    # 定义要绘制的键名、中文化Y轴标题 (英文/单位使用 \mathrm 包裹以调用 Times New Roman) 和保存的文件名后缀
-    plots_config = [
-        ("current", "电流（$\mathrm{A}$）", "current"),
-        ("voltage", "单体最大电压（$\mathrm{V}$）", "voltage"),
-        ("soc", "荷电状态", "soc"),
-        ("temperature", "最高温度（$\mathrm{K}$）", "temp")
-    ]
+    t_real = np.array(real_curve["time"])
+    t_comb = np.array(comb_curve["time"])
 
-    for key, title, suffix in plots_config:
-        # 每次循环新建一个独立画布
-        fig, ax = plt.subplots(figsize=figsize_single)
+    # 配置：键名，左Y轴标题，右Y轴误差标题，文件后缀，图例位置
+    plots_config = [
+        ("current", "充电电流 (A)", "绝对误差 (A)", "current", "upper right"),
+        ("voltage", "单体最大电压 (V)", "绝对误差 (V)", "voltage", "center right"), 
+        ("soc", "电池荷电状态 (-)", "绝对误差", "soc", "center right"),                                        
+        ("temperature", "最高温度 (℃)", "绝对误差 (℃)", "temp", "upper right")  
+    ] 
+
+    for key, title, err_title, suffix, leg_loc in plots_config:
+        fig, ax1 = plt.subplots(figsize=figsize_single)
         
-        # 绘制曲线，修改图例为中文
-        ax.plot(real_curve["time"], real_curve[key], label="真实仿真环境", color=colors_nature[0], linewidth=1.2)
-        ax.plot(comb_curve["time"], comb_curve[key], label="组合代理模型", color=colors_nature[1], linewidth=1.2)
+        y_real = np.array(real_curve[key])
+        y_comb = np.array(comb_curve[key])
+
+        # 如果是温度，将开尔文 (K) 转换为摄氏度 (°C)
+        if key == "temperature":
+            y_real = y_real - 273.15
+            y_comb = y_comb - 273.15
+
+        # 插值计算绝对误差 (Absolute Error)
+        y_comb_interp = np.interp(t_real, t_comb, y_comb)
+        abs_error = np.abs(y_comb_interp - y_real)
+
+        # --- 绘制主 Y 轴 (左侧：状态量) ---
+        line1, = ax1.plot(t_real, y_real, label="真实仿真环境", color=colors_nature[0], linewidth=1.0)
+        line2, = ax1.plot(t_comb, y_comb, label="老化衰减模型", color=colors_nature[1], linewidth=1.0)
         
-        # 标题与标签 (去掉 fontname 限制，让系统自动使用宋体，其中 \mathrm 部分会自动调用 Times New Roman)
-        ax.set_ylabel(title, fontsize=10.5)
-        ax.set_xlabel("时间（$\mathrm{s}$）", fontsize=10.5)
+        ax1.set_ylabel(title, fontsize=10.5)
+        ax1.set_xlabel("时间（s）", fontsize=10.5)
+
+        # --- 绘制副 Y 轴 (右侧：误差) ---
+        ax2 = ax1.twinx()
+        # 用浅灰色填充底部作为误差展示，alpha控制透明度
+        fill = ax2.fill_between(t_real, 0, abs_error, color=colors_nature[2], alpha=0.4, label="绝对误差")
+        # 极细的虚线勾勒误差边缘
+        ax2.plot(t_real, abs_error, color='#2ca02c', linewidth=0.3, linestyle='-.', alpha=0.6)
+        if key == "current":
+            # 增加 labelpad 把标题往外推
+            ax2.set_ylabel(err_title, fontsize=9, color='#2ca02c', labelpad=10) 
+            # 增加 pad 把刻度数字往外推
+            ax2.tick_params(axis='y', pad=4, length=3, colors='#2ca02c')
+        else:
+            # 其他图保持原样（默认 labelpad 约等于 4）
+            ax2.set_ylabel(err_title, fontsize=9, color='#2ca02c')
+            ax2.tick_params(axis='y', colors='#2ca02c')
+        # ax2.set_ylabel(err_title, fontsize=9, color='gray')
         
-        # 网格线：极淡的浅灰点划线
-        ax.grid(True, linestyle=':', alpha=0.6, color='#CCCCCC')
+        # 动态调整右侧 Y 轴的上限
+        max_err = np.max(abs_error) if np.max(abs_error) > 0 else 1.0
+        ax2.set_ylim(0, max_err * 2.5) 
         
-        # 图例规范：白底半透明，极浅边框 (去掉 prop={'family':...} 限制，直接用 fontsize)
-        ax.legend(
-            loc='best', 
+        # 修改右侧刻度颜色
+        # ax2.tick_params(axis='y', colors='gray')
+        ax2.spines['right'].set_color('#2ca02c')
+
+        # --- 合并图例 ---
+        leg = ax1.legend(
+            [line1, line2, fill], 
+            ["真实仿真环境", "老化衰减模型", "绝对误差"],
+            loc=leg_loc, 
             ncol=1,                    
             frameon=True,              
             facecolor='white',         
@@ -129,28 +158,101 @@ def plot_curves_separate(real_curve: Dict[str, List[float]], comb_curve: Dict[st
             labelspacing=0.3,
             fontsize=9
         )
+        leg.get_frame().set_linewidth(0.5)
 
-        # --- 收尾导出标准 ---
-        # 缩小刻度线与文字的间距
-        ax.tick_params(axis='x', pad=2, length=3)
-        ax.tick_params(axis='y', pad=2, length=3)
-        
-        # 坐标轴的刻度纯数字，直接强制遍历修改为 Times New Roman
-        for label in ax.get_xticklabels() + ax.get_yticklabels():
-            label.set_fontname('Times New Roman')
+        # --- 刻度与字体规范化 ---
+        for ax in [ax1, ax2]:
+            ax.tick_params(axis='x', pad=2, length=3)
+            ax.tick_params(axis='y', pad=2, length=3)
+            for label in ax.get_xticklabels() + ax.get_yticklabels():
+                label.set_fontname('Times New Roman')
 
-        plt.tight_layout()
-
-        # 生成独立的文件路径
+        # === 核心修改区 ===
+        # 1. 移除 plt.tight_layout()，替换为手动固定边距
+        # fig.subplots_adjust(left=0.18, right=0.82, top=0.92, bottom=0.18)
+        fig.subplots_adjust(left=0.15, right=0.85, top=0.92, bottom=0.18)
+        # 导出文件
         out_png = out_dir / f"{prefix}_{suffix}.png"
         out_pdf = out_dir / f"{prefix}_{suffix}.pdf"
         
-        # 导出双格式
-        plt.savefig(out_png, dpi=300, bbox_inches='tight')
-        plt.savefig(out_pdf, format='pdf', bbox_inches='tight')
+        # 2. 移除 bbox_inches='tight'，以保证画布严格遵守 figsize 和 subplots_adjust 的设定
         
+       
+        plt.savefig(out_png, dpi=300)
+        plt.savefig(out_pdf, format='pdf')
         plt.close(fig)
-        logging.info(f"成功保存单图: {out_png.name} (含同名 PDF)")
+        
+        logging.info(f"成功保存双Y轴叠图 (固定边距): {out_png.name} (含同名 PDF)")
+# def plot_curves_separate(real_curve: Dict[str, List[float]], comb_curve: Dict[str, List[float]], out_dir: Path, prefix: str) -> None:
+#     """
+#     将四个状态量分别绘制并保存为独立的高质量图片。
+#     尺寸严格遵循单图规范: 8.0cm x 5.5cm，横纵坐标及图例已中文化。
+#     """
+#     # Nature 经典学术配色
+#     colors_nature = ['#E64B35', '#4DBBD5']
+    
+#     # 物理尺寸换算 (厘米 -> 英寸)
+#     cm_to_inch = 1 / 2.54
+#     figsize_single = (8.0 * cm_to_inch, 5.5 * cm_to_inch)
+
+#     # 定义要绘制的键名、中文化Y轴标题 (英文/单位使用 \mathrm 包裹以调用 Times New Roman) 和保存的文件名后缀
+#     plots_config = [
+#         ("current", "电流（$\mathrm{A}$）", "current"),
+#         ("voltage", "单体最大电压（$\mathrm{V}$）", "voltage"),
+#         ("soc", "荷电状态", "soc"),
+#         ("temperature", "最高温度（$\mathrm{K}$）", "temp")
+#     ]
+
+#     for key, title, suffix in plots_config:
+#         # 每次循环新建一个独立画布
+#         fig, ax = plt.subplots(figsize=figsize_single)
+        
+#         # 绘制曲线，修改图例为中文
+#         ax.plot(real_curve["time"], real_curve[key], label="真实仿真环境", color=colors_nature[0], linewidth=1.2)
+#         ax.plot(comb_curve["time"], comb_curve[key], label="组合代理模型", color=colors_nature[1], linewidth=1.2)
+        
+#         # 标题与标签 (去掉 fontname 限制，让系统自动使用宋体，其中 \mathrm 部分会自动调用 Times New Roman)
+#         ax.set_ylabel(title, fontsize=10.5)
+#         ax.set_xlabel("时间（$\mathrm{s}$）", fontsize=10.5)
+        
+#         # 网格线：极淡的浅灰点划线
+#         # ax.grid(True, linestyle=':', alpha=0.6, color='#CCCCCC')
+        
+#         # 图例规范：白底半透明，极浅边框 (去掉 prop={'family':...} 限制，直接用 fontsize)
+#         ax.legend(
+#             loc='best', 
+#             ncol=1,                    
+#             frameon=True,              
+#             facecolor='white',         
+#             framealpha=0.9,            
+#             edgecolor=(0.7, 0.7, 0.7, 0.5),
+#             borderpad=0.3,       
+#             handletextpad=0.3,   
+#             labelspacing=0.3,
+#             fontsize=9
+#         )
+
+#         # --- 收尾导出标准 ---
+#         # 缩小刻度线与文字的间距
+#         ax.tick_params(axis='x', pad=2, length=3)
+#         ax.tick_params(axis='y', pad=2, length=3)
+        
+#         # 坐标轴的刻度纯数字，直接强制遍历修改为 Times New Roman
+#         for label in ax.get_xticklabels() + ax.get_yticklabels():
+#             label.set_fontname('Times New Roman')
+
+#         plt.tight_layout()
+
+#         # 生成独立的文件路径
+#         out_png = out_dir / f"{prefix}_{suffix}.png"
+#         out_pdf = out_dir / f"{prefix}_{suffix}.pdf"
+        
+#         # 导出双格式
+#         plt.savefig(out_png, dpi=300, bbox_inches='tight')
+#         plt.savefig(out_pdf, format='pdf', bbox_inches='tight')
+        
+#         plt.close(fig)
+#         logging.info(f"成功保存单图: {out_png.name} (含同名 PDF)")
 # ==========================================
 # 主执行流程 (纯评估模式)
 # ==========================================

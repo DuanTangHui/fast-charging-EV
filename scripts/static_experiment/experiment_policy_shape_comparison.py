@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import argparse
+import time
 import sys
 from pathlib import Path
 import matplotlib.pyplot as plt
@@ -55,7 +56,21 @@ def main() -> None:
 
     cfg, env_real, agent_real, reward_cfg = build_env_agent_reward(args.config, args.seed)
     _ = cfg
+    # === 开始计时 ===
+    print(f"开始在真实物理仿真环境中训练 {args.real_episodes} 个 episodes...")
+    start_time = time.time()
+    
     run_real_training_collect_style(env_real, agent_real, reward_cfg, episodes=args.real_episodes)
+    
+    # === 结束计时 ===
+    end_time = time.time()
+    elapsed_seconds = end_time - start_time
+    elapsed_minutes = elapsed_seconds / 60.0
+    elapsed_hours = elapsed_minutes / 60.0
+    
+    print(f"[耗时统计] 真实环境训练 {args.real_episodes} episodes 共耗时: "
+          f"{elapsed_seconds:.2f} 秒 (约 {elapsed_minutes:.2f} 分钟 / {elapsed_hours:.2f} 小时)")
+    # run_real_training_collect_style(env_real, agent_real, reward_cfg, episodes=args.real_episodes)
     save_real_ckpt = args.save_real_agent_ckpt or (args.output_dir / "real_trained_agent_ckpt.pt")
     save_real_ckpt.parent.mkdir(parents=True, exist_ok=True)
     agent_real.save(str(save_real_ckpt))

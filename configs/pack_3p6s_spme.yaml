@@ -1,4 +1,4 @@
-seed: 7
+seed: 11
 run_name: pack_3p6s_spme
 backend: liionpack
 
@@ -20,8 +20,8 @@ env:
     include_std: true #包含电池单体电压和温度的标准差->考虑电池单体间的差异
   htc: 100.0
   # ===== reset 随机性 =====
-  soc_init_low: 0.2
-  soc_init_high: 0.3
+  soc_init_low: 0.4
+  soc_init_high: 0.4
   soc_sigma_reset: 0.01   # ⭐ 新增：cell-level SOC 不一致标准差
 
 reward:
@@ -33,7 +33,7 @@ reward:
   # enable_pack_extensions: false
 
 rl:
-  algorithm: td3  # 可选: ddpg | td3 | ppo
+  algorithm: td3 # 可选: ddpg | td3 | ppo
   gamma: 0.99
   actor_lr: 0.0001
   critic_lr: 0.001

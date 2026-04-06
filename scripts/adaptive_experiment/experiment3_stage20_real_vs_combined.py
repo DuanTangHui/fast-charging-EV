@@ -204,7 +204,7 @@ def main() -> None:
 
     runs = Path(args.runs_dir)
     stage_agent_ckpt = runs / "adaptive" / f"adaptive_cycle{args.stage}" / "agent_ckpt.pt"
-    static_ckpt = runs / "cycle0" / "static_surrogate.pt"
+    static_ckpt = runs / "cycle00" / "static_surrogate.pt"
     diff_ckpt = runs / "adaptive" / f"adaptive_cycle{args.stage}" / "diff_surrogate.pt"
     
     if not stage_agent_ckpt.exists():

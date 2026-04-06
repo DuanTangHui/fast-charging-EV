@@ -116,23 +116,20 @@ class LiionpackSPMEPackEnv(BasePackEnv):
         self._soc_init_high = float(soc_init_high)
         self._soc_sigma_reset = float(soc_sigma_reset)
         # ---------- liionpack 内部对象 ----------
-        # 创建求解管理器器
-        self._rm = lp.CasadiManager()
+       
         self._nproc = int(nproc) # 可用cpu
-        # 构建 3P6S 的电路拓扑 netlist
-        self._netlist = lp.setup_circuit(
-            Np=self.pack_cells_p,
-            Ns=self.pack_cells_s,
-            Rb=float(Rb),
-            Rc=float(Rc),
-            Ri=float(Ri_init),
-            V=float(ocv_init),
-            I=0.0,
-        )
-        # 加载chen2020参数集
-        self._parameter_values = pybamm.ParameterValues(str(parameter_set))
+        # 保存用于构建网表的参数，方便 reset 时重建
+        self._Rb = float(Rb)
+        self._Rc = float(Rc)
+        self._Ri_init = float(Ri_init)
+        self._ocv_init = float(ocv_init)
+        
+        # 缓存chen2020基础参数集，防止 PyBaMM 就地修改
+        self._base_parameter_values = pybamm.ParameterValues(str(parameter_set))
+        
         # 定义步长
-        period_s = int(round(self.dt))
+        period_s = int(round(self.dt)) 
+    
         if period_s <= 0:
             raise ValueError("dt 必须 >= 1 秒（liionpack stepping 要求）。")
         # 总时长
@@ -245,21 +242,38 @@ class LiionpackSPMEPackEnv(BasePackEnv):
     # ============== liionpack 编译（每个 episode 一次） ==============
     def _lp_setup_on_reset(self, initial_soc: float) -> None:
         """每个 episode reset 时执行一次：编译模型并分配 protocol。"""
-        # 我需要的输出变量
+        # === 修复点：每次 reset 强制实例化一个新的 CasadiManager ===
+        # 确保清除底层 CasADi 遗留的所有计算图和历史状态
+        self._rm = lp.CasadiManager()
+        
+        # 2. 彻底重置电路网表：丢弃上一个 episode 遗留的节点状态
+        self._netlist = lp.setup_circuit(
+            Np=self.pack_cells_p,
+            Ns=self.pack_cells_s,
+            Rb=self._Rb,
+            Rc=self._Rc,
+            Ri=self._Ri_init,
+            V=self._ocv_init,
+            I=0.0,
+        )
+        
+        # 3. 复制干净的基础参数，防止被污染
+        clean_params = self._base_parameter_values.copy()
+
         self._requested_outputs = [
-            # "Current [A]",
-            "Terminal voltage [V]",  # ✅ cell 端电压（PyBaMM变量）
-            "Volume-averaged cell temperature [K]",  # ✅ cell 温度（PyBaMM变量）
+            "Terminal voltage [V]",  
+            "Volume-averaged cell temperature [K]",  
         ]
-        # 整个电池物理仿真图的“编译阶段”
+        
+        # 4. 使用全新的环境进行编译
         self._rm.solve(
             netlist=self._netlist,
             sim_func=self._sim_func,
-            parameter_values=self._parameter_values,
+            parameter_values=clean_params,
             experiment=self._experiment,
             output_variables=self._requested_outputs,
             inputs=self._lp_inputs,
-            nproc=self._nproc, # 可用cpu
+            nproc=self._nproc, 
             initial_soc=float(initial_soc),
             setup_only=True,
         )
@@ -268,12 +282,14 @@ class LiionpackSPMEPackEnv(BasePackEnv):
         nsteps = int(self._rm.Nsteps)
         self._rm.protocol = np.zeros(nsteps, dtype=float)
 
-        self._rm.step = -1 #liionpack 内部当前时间索引
-        self._lp_step = 0 # 你环境包装的当前 step索引
+        self._rm.step = -1
+        self._lp_step = 0
+
 
         # 缓存单体容量（用于 SOC proxy）
         try:
-            self._C_cell_Ah = float(self._parameter_values["Nominal cell capacity [A.h]"])
+            # 这里的 self._parameter_values 替换为 clean_params
+            self._C_cell_Ah = float(clean_params["Nominal cell capacity [A.h]"])
         except Exception:
             self._C_cell_Ah = 3.0
           

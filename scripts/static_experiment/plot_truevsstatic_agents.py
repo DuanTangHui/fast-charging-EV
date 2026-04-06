@@ -12,33 +12,19 @@ import matplotlib.ticker as ticker
 simsun_path = r'C:\Windows\Fonts\simsun.ttc'
 if os.path.exists(simsun_path):
     font_manager.fontManager.addfont(simsun_path)
-
 plt.rcParams.update({
-    "font.family": "serif",
-    "font.serif": ["SimSun"], 
-    
-    # 核心：将数学文本内的常规字体 (rm) 映射为 Times New Roman
-    "mathtext.fontset": "custom",
-    "mathtext.rm": "Times New Roman",
-    "mathtext.it": "Times New Roman:italic",
-    
-    # 学术期刊强制要求！确保字体以 TrueType (Type 42) 格式嵌入 PDF
+    'font.family': ['Times New Roman', 'SimSun'],  # 关键：先英文字体，再中文
+    'axes.unicode_minus': False,
+    'figure.dpi': 300,
     "pdf.fonttype": 42,
     "ps.fonttype": 42,
-    "axes.unicode_minus": False,
-    
-    # 开启全包围边框
     "axes.spines.top": True,
     "axes.spines.right": True,
-    
-    # 将边框和刻度线微调变细，显得更精致
-    "axes.linewidth": 1.0,
-    "xtick.major.width": 1.0,
-    "ytick.major.width": 1.0,
+    "axes.linewidth": 0.5,
+    "xtick.major.width": 0.5,
+    "ytick.major.width": 0.5,
     "xtick.direction": "in",
     "ytick.direction": "in",
-    
-    # 【全局字号设定为 9】
     "font.size": 9,                     
     "axes.labelsize": 9,
     "xtick.labelsize": 9,

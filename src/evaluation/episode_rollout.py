@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from typing import Callable, Dict, List, Tuple
-
+import time
 import numpy as np
 
 from ..envs.base_env import BasePackEnv
@@ -140,8 +140,17 @@ def rollout_surrogate(
         # 1. 策略动作
         action = policy(curr_state) 
         a_val = float(action[0])
+
+        # === 计算单步预测耗时 ===
+        # t_pred_start = time.perf_counter()
+        # # 2. 预测 (Mean, Std)
+        # delta_mean, delta_std = surrogate(curr_state, action)
         
-        # 2. 预测 (Mean, Std)
+        # t_pred_end = time.perf_counter()
+        
+        # # 打印一次后可以注释掉，否则每个 timestep 都会刷屏
+        # if k == 0: 
+        #     print(f"[耗时测试] 代理模型运行一次 (单步预测) 耗时: {(t_pred_end - t_pred_start) * 1000:.4f} 毫秒")
         delta_mean, delta_std = surrogate(curr_state, action)
        
         # 3. 状态更新 只更新前6维；Iprev=action）
@@ -176,34 +185,8 @@ def rollout_surrogate(
             config=reward_cfg
         )
 
-        # 6.【加入电压势垒 (Voltage Barrier)
-        # 仅有撞墙后的惩罚不够，Agent 需要在撞墙前(4.15V)就感到疼痛。
-        # 假设 compute_paper_reward 里没有这个逻辑，我们需要在这里手动补上。
-        # barrier_penalty = 0.0
-        # if v_mean > 4.15: # 软约束阈值
-        #     # 方案 A：较缓的指数 (将系数从 30 降至 15)
-        #     # 4.15V -> -0.1
-        #     # 4.18V -> -0.5
-        #     # 4.20V -> -1.5
-        #     barrier_penalty = -0.5 * np.exp(15.0 * (v_mean - 4.18))
-        
-       
-
         step_reward = r_phys 
-        # if v_mean > 4.15: # 软约束阈值
-        #     # 随着电压接近 4.2，惩罚呈指数增长
-        #     # 4.15V -> -0.2
-        #     # 4.18V -> -2.0
-        #     # 4.20V -> -20.0 (加上下面的 safety_penalty，总计 -70)
-        #     barrier_penalty = -2.0 * np.exp(30.0 * (v_mean - 4.18))
-        
-        # # 违规惩罚 (Violation Penalty)
-        # safety_penalty = 0.0
-        # if violation:
-        #     safety_penalty = -50.0 # 给予重罚
-
-        # step_reward = r_phys + barrier_penalty + safety_penalty
-        total_reward += step_reward
+      
 
         # 6) violation 与终止条件（尽量贴近真实环境口径）
         soc_done = float(next_state[IDX_SOC]) >= 0.80

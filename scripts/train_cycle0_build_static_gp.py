@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import time
 import sys
 import os
 from pathlib import Path
@@ -52,7 +53,20 @@ def main() -> None:
     run_dir = ensure_dir(Path(config["logging"]["runs_dir"]) / "cycle0")
     cycle0_cfg = Cycle0Config(**config["trainer"]["cycle0"])
 
+    # === 开始计时 ===
+    print("开始在代理模型环境下进行 Cycle0 训练...")
+    start_time = time.time()
+
     train_cycle0(env, agent, reward_cfg, surrogate, cycle0_cfg, str(run_dir))
+
+    # === 结束计时 ===
+    end_time = time.time()
+    elapsed_seconds = end_time - start_time
+    elapsed_minutes = elapsed_seconds / 60.0
+    elapsed_hours = elapsed_minutes / 60.0
+    
+    print(f"[耗时统计] 代理模型环境训练 (Cycle0) 共耗时: "
+          f"{elapsed_seconds:.2f} 秒 (约 {elapsed_minutes:.2f} 分钟 / {elapsed_hours:.2f} 小时)")
 
     # torch.save(agent.actor.state_dict(), run_dir / "policy.pt")
     # torch.save({

@@ -8,6 +8,7 @@ import torch
 import numpy as np
 import pandas as pd
 import pybamm
+import time
 from scipy.interpolate import interp1d
 
 from torch import clip
@@ -368,21 +369,6 @@ def collect_real_data(
     v_soft = float(getattr(config, "v_soft_max", env.v_max - 0.03))  # 比硬约束低一点，比如 4.17
     t_soft = float(getattr(config, "t_soft_max", env.t_max - 1.5))   # 比硬约束低一点，比如 318.5K
 
-    # 定义Guard：当接近边界时，把电流往 0A 拉
-    # def guard_action(action: float, info: dict) -> float:
-    #     v = float(info.get("V_cell_max", -1e9))
-    #     t = float(info.get("T_cell_max", -1e9))
-    #     viol = bool(info.get("violation", False))
-
-    #     # 已经违规：立即大幅减小电流（靠近0）
-    #     if viol:
-    #         return float(np.clip(action + 5.0, low, high))  # prev_action是负数，加5就是减小幅值
-
-    #     # 接近电压或温度软阈值：渐进减小电流
-    #     if v >= v_soft or t >= t_soft:
-    #         return float(np.clip(action + 2.0, low, high))
-
-    #     return action
     get_ocv = get_chen2020_ocv_func()
     def physics_limit_action(action_from_agent: float, info: dict) -> float:
         """
@@ -450,9 +436,10 @@ def collect_real_data(
             for _ in range(config.hold_steps):
                 # 记录 step 前的 SOC
                 prev_soc = current_soc
-
+                # === [新增计时逻辑] 2. 精确记录单步仿真耗时 ===
+                # t0 = time.perf_counter()  # 记录开始时间
                 next_state, _, terminated, truncated, next_info = env.step(action_to_exec)
-                
+                # print(f"仿真环境运行一次 (env.step) 所需时间: {(time.perf_counter() - t0) * 1000:.2f} 毫秒")
                 # 更新当前的 SOC, V, T 等信息
                 current_soc = float(next_info["SOC_pack"])
                 v_max = float(next_info["V_cell_max"])
@@ -615,45 +602,37 @@ def train_cycle0(
     
     """Run Cycle0 training pipeline."""
     # 1) 真实环境采集
-    # transitions = collect_real_data(env, reward_cfg, agent, config)
+    # transitions1 = collect_real_data(env, reward_cfg, agent, config)
     transitions, transition_episode_ids = collect_real_data(env, reward_cfg, agent, config)
-    verify_dataset_coverage(transitions)
-    save_transitions_to_csv(transitions, "dataset.csv")
-    save_transitions_with_episode_to_csv(transitions, transition_episode_ids, "dataset_with_episode.csv")
+    # verify_dataset_coverage(transitions)
+    # save_transitions_to_csv(transitions, "dataset.csv")
+    # save_transitions_with_episode_to_csv(transitions, transition_episode_ids, "dataset_with_episode.csv")
     
     # actions = np.array([a[0] for _, a, _ in transitions], dtype=float)
     # print("Action stats: mean", actions.mean(), "std", actions.std(), "min", actions.min(), "max", actions.max())
-    # csv_path = "C:\\Users\\85721\\Desktop\\fast-charging-EV\\dataset_td3.csv"
-    # transitions = load_transitions_from_csv(csv_path)
+    # csv_path = "C:/Users/lht64/Desktop/fast-charging-EV/dataset.csv"
    
+    # transitions2 = load_transitions_from_csv(csv_path)
+    # transitions = transitions1 + transitions2
 
-    # ckpt_path = "C:\\Users\\85721\\Desktop\\fast-charging-EV\\runs\\cycle0\\policy_start_td3.pt"
+    # ckpt_path = "C:/Users/lht64/Desktop/fast-charging-EV/runs/cycle0/policy_start.pt"
     # agent.load(str(ckpt_path))
     # 2) 静态代理模型训练
     dataset = build_dataset(transitions)
-    # t_idx = -2 
-    # v_idx = 2   # 假设第2列是 V_max
-
-    # print(f"--- 数据统计量诊断 ---")
-    # print(f"【温度 Delta】 均值: {dataset.d_mean[t_idx]:.8f}, 标准差: {dataset.d_std[t_idx]:.8f}")
-    # print(f"【电压 Delta】 均值: {dataset.d_mean[v_idx]:.8f}, 标准差: {dataset.d_std[v_idx]:.8f}")
-    # print(f"【温度 Delta】 最大值: {np.max(dataset.deltas[:, t_idx]):.8f}, 最小值: {np.min(dataset.deltas[:, t_idx]):.8f}")
-
-    # # 关键检查点
-    # if dataset.d_std[t_idx] <= 1.1e-6:
-    #     print("❌ 致命错误：温度标准差接近 1e-6 (Clip值)。")
-    #     print("   原因：采样间隔太短，或者数据里全是静置，温度根本没变。")
-    #     print("   后果：模型认为温度永远不变，归一化失效。")
-    # else:
-    #     print("✅ 统计量看起来有波动。")
+    print(f"开始训练静态代理模型，共 {config.surrogate_epochs} epochs...")
+    t_train_start = time.perf_counter() # <--- 记录训练开始时间
 
     surrogate.fit(dataset, epochs=config.surrogate_epochs)
+
+    t_train_end = time.perf_counter()   # <--- 记录训练结束时间
+    print(f"静态代理模型训练完成！耗时: {t_train_end - t_train_start:.2f} 秒")
+    # surrogate.fit(dataset, epochs=config.surrogate_epochs)
     print("静态代理模型训练完成。")
     
     # 3) 测试 surrogate 训练效果
     # validate_surrogate_rollout(env, agent, surrogate, dataset)
     # 3) N-step 误差评估（用 agent 跑真实轨迹，然后 surrogate 复现）
-    validate_full_charge_comparison(env, agent, surrogate)
+    # validate_full_charge_comparison(env, agent, surrogate)
     # 4) 用静态代理训练 RL 策略
     low = float(agent.config.action_low)
     high = float(agent.config.action_high)

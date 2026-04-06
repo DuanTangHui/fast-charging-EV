@@ -63,20 +63,13 @@ python scripts/other_method/run_full_experiment.py configs/pack_3p6s_spme.yaml r
 1. 训练/生成方法
 
 ```bash
-python scripts/other_method/train_other_methods.py \
-  --config configs/pack_3p6s_spme.yaml \
-  --output runs/other_method \
-  --seed 7
+python scripts/other_method/train_other_methods.py --config configs/pack_3p6s_spme.yaml --output runs/other_method --seed 7
 ```
 
 2. 在真实环境跑一回合并对比
 
 ```bash
-python scripts/other_method/evaluate_on_real_env.py \
-  --config configs/pack_3p6s_spme.yaml \
-  --manifest runs/other_method/models/manifest.json \
-  --output runs/other_method/eval \
-  --seed 7
+python scripts/other_method/evaluate_on_real_env.py --config configs/pack_3p6s_spme.yaml --manifest runs/other_method/models/manifest.json --output runs/other_method/eval --seed 7
 ```
 
 ---

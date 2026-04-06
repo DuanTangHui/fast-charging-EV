@@ -43,7 +43,8 @@ python scripts/static_experiment/experiment_policy_shape_comparison.py --config 
 python scripts/static_experiment/experiment_training_process_1000.py  --config configs/pack_3p6s_spme.yaml
 
 python scripts/static_experiment/experiment_static_surrogate_validity.py --plot-fig7-from-csv --cv-metrics-csv runs/static_surrogate_validity_real/episode_cv_metrics.csv --output-dir runs/static_surrogate_validity_real
-跳过csv的表格直接画图：python scripts/static_experiment/experiment_static_surrogate_validity.py --skip-cv
+直接画四张同一RL智能体在真实物理环境与静态模型上交互运行结果图：python scripts/static_experiment/experiment_static_surrogate_validity.py --skip-cv
+读取csv画MSE、MAE：python scripts/static_experiment/experiment_static_surrogate_validity.py --plot-fig7-from-csv --cv-metrics-csv runs/static_surrogate_validity_real/episode_cv_metrics.csv 
 ```
 
 ## 输出
